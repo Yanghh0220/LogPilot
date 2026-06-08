@@ -4,3 +4,6 @@
 streamlit          # Web 界面框架，让我们用 Python 就能写网页
 openai             # DeepSeek 兼容 OpenAI SDK，所以装这个就行
 python-dotenv      # 读取 .env 文件中的 API Key
+
+# 开发依赖（只在开发/测试时需要）
+pytest             # 测试框架，运行 pytest 命令即可跑测试

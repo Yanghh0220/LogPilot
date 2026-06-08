@@ -497,7 +497,20 @@ if analyze_clicked:
         with st.spinner("正在分析..."):
             try:
                 result = analyze_log(log_input)
+            except ValueError as e:
+                # 输入为空或 JSON 解析失败
+                st.error(f"输入错误：{str(e)}")
+                st.stop()
+            except RuntimeError as e:
+                # API Key 未配置或 AI 返回空内容
+                st.error(f"配置错误：{str(e)}")
+                st.stop()
+            except ConnectionError as e:
+                # API 调用失败（网络、认证、余额等）
+                st.error(f"网络错误：{str(e)}")
+                st.stop()
             except Exception as e:
+                # 其他未知异常
                 st.error(f"分析失败：{str(e)}")
                 st.stop()
 

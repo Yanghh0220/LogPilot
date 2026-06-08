@@ -9,11 +9,8 @@
 [![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python)](https://python.org)
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.37-red?logo=streamlit)](https://streamlit.io)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
-[![Stars](https://img.shields.io/github/stars/Yanghh0220/LogPilot?style=social)](https://github.com/Yanghh0220/LogPilot)
 
-[🚀 在线体验](#) · [📖 使用文档](#使用方法) · [🐛 报告问题](https://github.com/Yanghh0220/LogPilot/issues)
-
-![demo](assets/demo.gif)
+[📖 使用文档](#使用方法) · [🐛 报告问题](https://github.com/Yanghh0220/LogPilot/issues)
 
 </div>
 
@@ -24,12 +21,12 @@
 CI/CD 流水线失败时，开发者需要面对动辄几百行的构建日志。
 人工定位错误平均需要 **15-30 分钟**，而且很容易遗漏关键信息。
 
-LogPilot 通过以下方式解决这个问题：
+LogPilot 用 AI 帮你快速分析构建日志：
 
-1. **自动识别**日志来源平台（GitHub Actions / Docker / npm / pytest 等）
-2. **智能提取**关键错误行，过滤无关噪音
-3. **AI 根因分析**：给出 Top 3 可能原因和具体修复命令
-4. **结构化输出**：错误摘要、根因、修复步骤、严重程度一目了然
+1. **中文解读**：把晦涩的报错翻译成人话
+2. **根因分析**：给出 Top 3 可能的错误原因
+3. **修复命令**：提供可直接复制执行的修复方案
+4. **排查命令**：给出进一步诊断的命令
 
 ---
 
@@ -37,13 +34,112 @@ LogPilot 通过以下方式解决这个问题：
 
 | 功能 | 说明 |
 |------|------|
-| 🏷️ 自动识别平台 | 支持 GitHub Actions / Jenkins / Docker / npm / pytest / Go / Java |
-| 🔍 智能日志提取 | 提取关键错误行 + 上下文，过滤噪音 |
-| 🤖 AI 根因分析 | 基于 LLM 的错误原因分析与修复建议 |
-| 📊 错误统计 | 直观展示错误数、警告数、致命错误数 |
-| 📥 导出报告 | 一键导出 Markdown 格式分析报告 |
-| 📄 示例日志 | 内置多种场景示例，开箱即用 |
+| 🤖 AI 根因分析 | 基于 DeepSeek 大模型分析错误原因 |
+| 📖 中文解读 | 用通俗易懂的中文解释报错信息 |
+| 🔧 修复建议 | 提供 Top 3 修复方案及具体命令 |
+| 🔍 排查命令 | 给出进一步诊断的命令 |
+| 📋 一键复制 | 命令可直接复制到终端执行 |
+| 📄 示例日志 | 内置 npm / Docker / pytest 示例 |
 
 ---
 
-## 🛠️ 技术架构
+## 🚀 快速开始
+
+### 1. 克隆项目
+
+```bash
+git clone https://github.com/Yanghh0220/LogPilot.git
+cd LogPilot
+```
+
+### 2. 创建虚拟环境
+
+```bash
+python -m venv venv
+# Windows
+venv\Scripts\activate
+# macOS/Linux
+source venv/bin/activate
+```
+
+### 3. 安装依赖
+
+```bash
+pip install -r requirements.txt
+```
+
+### 4. 配置 API Key
+
+复制示例配置文件并填入你的 API Key：
+
+```bash
+cp .env.example .env
+```
+
+编辑 `.env` 文件，填入你的 DeepSeek API Key：
+
+```
+DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+> 💡 API Key 获取：前往 [DeepSeek 开放平台](https://platform.deepseek.com/) 注册并创建
+
+### 5. 启动应用
+
+```bash
+streamlit run app.py
+```
+
+浏览器会自动打开 `http://localhost:8501`
+
+---
+
+## 📖 使用方法
+
+1. 在输入框粘贴构建失败日志（或点击示例按钮）
+2. 点击「开始分析」
+3. 查看分析结果：
+   - **错误摘要**：一句话概括问题
+   - **关键错误信息**：提取的核心报错
+   - **原因分析**：AI 解读的错误原因
+   - **修复建议**：Top 3 修复方案及命令
+   - **排查命令**：进一步诊断的命令
+4. 复制修复命令到终端执行
+
+---
+
+## 📁 项目结构
+
+```
+LogPilot/
+├── app.py              # Streamlit 主界面
+├── analyzer.py         # AI 分析核心逻辑
+├── prompt.py           # Prompt 模板
+├── requirements.txt    # Python 依赖
+├── .env.example        # 环境变量示例
+├── .gitignore          # Git 忽略配置
+├── CLAUDE.md           # AI 结对编程指南
+└── README.md           # 项目说明
+```
+
+---
+
+## 🛠️ 技术栈
+
+| 组件 | 技术 |
+|------|------|
+| 前端 | [Streamlit](https://streamlit.io/) |
+| AI 模型 | [DeepSeek](https://platform.deepseek.com/) |
+| 语言 | Python 3.10+ |
+
+---
+
+## 📝 License
+
+MIT License
+
+---
+
+<div align="center">
+Made with care by LogPilot
+</div>
