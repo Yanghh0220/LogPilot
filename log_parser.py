@@ -241,6 +241,43 @@ def truncate_log(log_text: str, max_length: int = MAX_LOG_LENGTH) -> str:
     )
 
 
+def get_error_stats(log_text: str) -> dict[str, int]:
+    """
+    统计日志中的错误、警告、致命错误数量
+
+    参数:
+        log_text: 原始日志文本
+
+    返回:
+        包含以下字段的字典:
+        - total_lines: 日志总行数
+        - error_count: 包含 "error" 关键词的行数
+        - warning_count: 包含 "warn" 关键词的行数
+        - fatal_count: 包含 "fatal" 关键词的行数
+    """
+    lines = log_text.splitlines()
+    total_lines = len(lines)
+    error_count = 0
+    warning_count = 0
+    fatal_count = 0
+
+    for line in lines:
+        line_lower = line.lower()
+        if "fatal" in line_lower:
+            fatal_count += 1
+        if "error" in line_lower:
+            error_count += 1
+        if "warn" in line_lower:
+            warning_count += 1
+
+    return {
+        "total_lines": total_lines,
+        "error_count": error_count,
+        "warning_count": warning_count,
+        "fatal_count": fatal_count,
+    }
+
+
 def parse_log(log_text: str) -> ParsedLog:
     """
     日志预处理的主入口函数

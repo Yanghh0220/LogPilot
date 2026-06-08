@@ -2,109 +2,174 @@
 
 # 🛩️ LogPilot
 
-**AI-Powered CI/CD Log Analyzer**
+**AI 驱动的 CI/CD 日志分析助手 —— 从报错到修复，60 秒搞定**
 
-把构建失败日志扔给我，我帮你翻译成人话，给出修复方案。
+把构建失败日志扔给我，我帮你翻译成人话，直接给你修复命令。
 
-[![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python)](https://python.org)
-[![Streamlit](https://img.shields.io/badge/Streamlit-1.37-red?logo=streamlit)](https://streamlit.io)
-[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python&logoColor=white)](https://www.python.org/)
+[![Streamlit](https://img.shields.io/badge/Streamlit-1.37-FF4B4B?logo=streamlit&logoColor=white)](https://streamlit.io/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
+[![Tests](https://img.shields.io/badge/Tests-Pytest-yellow?logo=pytest&logoColor=white)](https://pytest.org/)
+[![DeepSeek](https://img.shields.io/badge/AI-DeepSeek-6366F1?logo=google&logoColor=white)](https://platform.deepseek.com/)
 
-[📖 使用文档](#使用方法) · [🐛 报告问题](https://github.com/Yanghh0220/LogPilot/issues)
+[📖 快速开始](#-快速开始) · [✨ 功能特性](#-功能特性) · [🗺️ Roadmap](#%EF%B8%8F-roadmap) · [🐛 报告问题](https://github.com/Yanghh0220/LogPilot/issues)
 
 </div>
 
 ---
 
-## 🎯 这个项目解决什么问题
+## 🤔 LogPilot 解决什么问题？
 
-CI/CD 流水线失败时，开发者需要面对动辄几百行的构建日志。
-人工定位错误平均需要 **15-30 分钟**，而且很容易遗漏关键信息。
+每次 CI/CD 流水线挂了，你面对的是这样的场景：
 
-LogPilot 用 AI 帮你快速分析构建日志：
+> 几百行日志，翻了 20 分钟，发现只是一个 npm 依赖版本冲突……
 
-1. **中文解读**：把晦涩的报错翻译成人话
-2. **根因分析**：给出 Top 3 可能的错误原因
-3. **修复命令**：提供可直接复制执行的修复方案
-4. **排查命令**：给出进一步诊断的命令
+| | 手动排查 | ChatGPT 直接问 | **LogPilot** |
+|--|:--------:|:--------------:|:------------:|
+| 耗时 | 15-30 分钟 | 3-5 分钟 | **< 1 分钟** |
+| 需要自己找错误行？ | ✅ | ✅ | ❌ 自动提取 |
+| 命令能直接复制执行？ | ❌ | ⚠️ 经常不准 | ✅ |
+| 认识 CI/CD 平台？ | ✅ | ❌ | ✅ 10+ 平台 |
+| 需要注册登录？ | ❌ | ✅ | ❌ |
+
+---
+
+## 📊 数据流架构
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        LogPilot 数据流架构                           │
+└─────────────────────────────────────────────────────────────────────┘
+
+  用户粘贴日志         log_parser.py          prompt.py
+  ┌──────────┐       ┌──────────────┐      ┌─────────────┐
+  │          │──────▶│  · 平台识别   │─────▶│  · 构建提示词 │
+  │  构建日志 │       │  · 错误提取   │      │  · Few-shot  │
+  │  (任意平台)│       │  · 智能截断   │      │  · 格式约束  │
+  └──────────┘       └──────────────┘      └──────┬──────┘
+                                                  │
+                                                  ▼
+  Streamlit UI          config.py          analyzer.py
+  ┌──────────────┐     ┌──────────┐      ┌──────────────┐
+  │  · 错误摘要   │◀────│ 环境变量  │◀─────│  · 调用 DeepSeek│
+  │  · 根因分析   │     │ API Key  │      │  · 解析 JSON   │
+  │  · 修复建议   │     │ 模型配置  │      │  · 异常处理    │
+  │  · 排查命令   │     └──────────┘      └──────────────┘
+  │  · 一键复制   │
+  └──────────────┘
+```
 
 ---
 
 ## ✨ 功能特性
 
+### 核心能力
+
 | 功能 | 说明 |
 |------|------|
-| 🤖 AI 根因分析 | 基于 DeepSeek 大模型分析错误原因 |
-| 📖 中文解读 | 用通俗易懂的中文解释报错信息 |
-| 🔧 修复建议 | 提供 Top 3 修复方案及具体命令 |
-| 🔍 排查命令 | 给出进一步诊断的命令 |
-| 📋 一键复制 | 命令可直接复制到终端执行 |
-| 📄 示例日志 | 内置 npm / Docker / pytest 示例 |
+| 🤖 AI 根因分析 | 基于 DeepSeek 大模型深度分析错误原因 |
+| 📖 中文解读 | 用通俗易懂的中文解释晦涩的报错信息 |
+| 🔧 修复建议 | 提供 Top 3 修复方案，附带可直接复制的命令 |
+| 🔍 排查命令 | 给出进一步诊断的命令，帮你确认问题 |
+| 📋 一键复制 | 每个命令都可以一键复制到终端 |
+| 📄 内置示例 | 3 种常见日志示例（npm / Docker / pytest），零门槛体验 |
+| 🧠 智能预处理 | 自动识别平台、提取关键错误行、截断超长日志 |
+
+### 支持的日志来源
+
+<table>
+<tr>
+<td width="33%">
+
+**📦 包管理器**
+- npm / yarn / pnpm
+- pip / poetry
+- cargo (Rust)
+- Gradle / Maven
+
+</td>
+<td width="33%">
+
+**🐳 容器 & CI/CD**
+- Docker Build
+- GitHub Actions
+- Jenkins
+- GitLab CI
+
+</td>
+<td width="33%">
+
+**🧪 测试框架**
+- pytest
+- Jest / Vitest
+- JUnit
+
+</td>
+</tr>
+</table>
+
+> 💡 不在列表里的日志也能分析，只是平台识别的准确度可能稍低。
 
 ---
 
 ## 🚀 快速开始
 
-### 1. 克隆项目
+### 前置条件
+
+- **Python 3.10+**（推荐 3.11）
+- **DeepSeek API Key**（[点此注册](https://platform.deepseek.com/)，新用户有免费额度）
+
+### 安装步骤
 
 ```bash
+# 1. 克隆项目
 git clone https://github.com/Yanghh0220/LogPilot.git
 cd LogPilot
-```
 
-### 2. 创建虚拟环境
-
-```bash
+# 2. 创建虚拟环境（为什么？防止依赖污染系统 Python）
 python -m venv venv
-# Windows
+
+# 3. 激活虚拟环境
+# Windows:
 venv\Scripts\activate
-# macOS/Linux
+# macOS / Linux:
 source venv/bin/activate
-```
 
-### 3. 安装依赖
-
-```bash
+# 4. 安装依赖
 pip install -r requirements.txt
-```
 
-### 4. 配置 API Key
-
-复制示例配置文件并填入你的 API Key：
-
-```bash
+# 5. 配置 API Key
 cp .env.example .env
-```
+# 然后用编辑器打开 .env，填入你的 DeepSeek API Key
 
-编辑 `.env` 文件，填入你的 DeepSeek API Key：
-
-```
-DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx
-```
-
-> 💡 API Key 获取：前往 [DeepSeek 开放平台](https://platform.deepseek.com/) 注册并创建
-
-### 5. 启动应用
-
-```bash
+# 6. 启动！
 streamlit run app.py
 ```
 
-浏览器会自动打开 `http://localhost:8501`
+浏览器会自动打开 `http://localhost:8501`，粘贴一段日志试试吧 🎉
+
+### 运行测试
+
+```bash
+# 运行全部测试
+pytest tests/ -v
+
+# 运行指定测试文件
+pytest tests/test_log_parser.py -v
+```
 
 ---
 
 ## 📖 使用方法
 
-1. 在输入框粘贴构建失败日志（或点击示例按钮）
-2. 点击「开始分析」
-3. 查看分析结果：
-   - **错误摘要**：一句话概括问题
-   - **关键错误信息**：提取的核心报错
-   - **原因分析**：AI 解读的错误原因
-   - **修复建议**：Top 3 修复方案及命令
-   - **排查命令**：进一步诊断的命令
-4. 复制修复命令到终端执行
+1. **粘贴日志** — 在输入框粘贴你的构建失败日志（或点击内置示例）
+2. **点击分析** — 点击「🚀 开始分析」按钮
+3. **查看结果** — AI 会在几秒内返回结构化分析报告：
+   - 🔴 **错误摘要** — 一句话概括问题
+   - 🔵 **原因分析** — AI 解读的错误根因
+   - 🟢 **修复建议** — Top 3 修复方案，附带可执行命令
+   - 🟣 **排查命令** — 进一步诊断的命令
+4. **复制修复** — 点击命令旁的复制按钮，粘贴到终端执行
 
 ---
 
@@ -112,44 +177,87 @@ streamlit run app.py
 
 ```
 LogPilot/
-├── app.py                # Streamlit 主界面
-├── style.css             # 全局样式（从 app.py 抽离）
-├── analyzer.py           # AI 分析核心逻辑
-├── log_parser.py         # 日志预处理（平台检测、错误提取、截断）
-├── prompt.py             # Prompt 模板（Few-shot + 用户提示构建）
-├── models.py             # 数据类型定义（TypedDict）
-├── config.py             # 集中配置管理（环境变量读取）
-├── requirements.txt      # Python 依赖
-├── .env.example          # 环境变量示例
-├── .gitignore            # Git 忽略配置
-├── .streamlit/           # Streamlit 配置
-│   └── config.toml
-├── tests/                # 单元测试
-│   ├── test_log_parser.py
-│   └── test_prompt.py
-├── CLAUDE.md             # AI 结对编程指南
-├── LICENSE               # MIT 许可证
-└── README.md             # 项目说明
+├── app.py                  # 🎨 Streamlit 前端主入口
+├── analyzer.py             # 🧠 AI 分析引擎（调用 DeepSeek API）
+├── prompt.py               # 📝 Prompt 工程（系统提示词 + 用户提示词构建）
+├── log_parser.py           # 🔍 日志预处理（平台识别 / 错误提取 / 智能截断）
+├── models.py               # 📐 类型定义（TypedDict）
+├── config.py               # ⚙️ 配置管理（环境变量读取）
+├── style.css               # 🎨 全局 CSS 样式
+├── .env.example            # 🔑 环境变量模板
+├── requirements.txt        # 📦 Python 依赖清单
+├── .streamlit/
+│   └── config.toml         # Streamlit UI 配置
+├── tests/                  # 🧪 单元测试
+│   ├── conftest.py         #    Pytest 配置（sys.path 处理）
+│   ├── test_log_parser.py  #    日志解析模块测试
+│   └── test_prompt.py      #    Prompt 模块测试
+├── CLAUDE.md               # 🤖 AI 结对编程指南
+├── LICENSE                 # 📄 MIT 开源许可证
+└── README.md               # 📖 项目说明（你正在看的这个）
 ```
 
 ---
 
-## 🛠️ 技术栈
+## 🛠️ Tech Stack
 
-| 组件 | 技术 |
-|------|------|
-| 前端 | [Streamlit](https://streamlit.io/) |
-| AI 模型 | [DeepSeek](https://platform.deepseek.com/) |
-| 语言 | Python 3.10+ |
+| 层级 | 技术 | 为什么选它 |
+|------|------|-----------|
+| **前端** | Streamlit | 零前端代码，纯 Python 写 Web UI |
+| **后端** | Python 3.10+ | 简洁、生态好、新手友好 |
+| **AI 模型** | DeepSeek V3 | 性价比高，中文能力强 |
+| **AI SDK** | OpenAI Python SDK | DeepSeek 兼容 OpenAI 接口，换模型零改动 |
+| **测试** | Pytest | Python 社区标准，上手简单 |
+| **配置** | python-dotenv | 安全存储 API Key，不硬编码 |
 
 ---
 
-## 📝 License
+## 🗺️ Roadmap
 
-MIT License
+### ✅ v1.0 — 已完成
+
+- [x] 核心日志分析功能（DeepSeek AI 驱动）
+- [x] 10+ CI/CD 平台自动识别
+- [x] 结构化输出（错误摘要 / 根因 / 修复命令 / 排查命令）
+- [x] 内置 3 种示例日志（npm / Docker / pytest）
+- [x] 智能日志截断（保留头尾关键信息，中间省略）
+- [x] 响应式 UI 设计 + 自定义 CSS 样式
+- [x] 单元测试覆盖（log_parser + prompt）
+
+### 🔜 v1.1 — 计划中
+
+- [ ] 支持更多 AI 模型（OpenAI / Claude / 本地 Ollama）
+- [ ] 日志文件拖拽上传（.log / .txt）
+- [ ] 历史分析记录（浏览器 localStorage）
+- [ ] 分析结果导出（Markdown / PDF）
+
+### 🔮 v2.0 — 远期展望
+
+- [ ] VS Code 插件版本
+- [ ] GitHub Actions 集成（PR 评论自动分析）
+- [ ] 暗色主题
+- [ ] Docker 一键部署
+
+---
+
+## 🤝 Contributing
+
+欢迎贡献！请查看 [CONTRIBUTING.md](./CONTRIBUTING.md) 了解：
+
+- 如何本地运行项目
+- Commit 信息规范（feat / fix / docs / test / ci / refactor）
+- 如何提交 PR
+
+## 📄 License
+
+本项目基于 [MIT License](./LICENSE) 开源。
 
 ---
 
 <div align="center">
-Made with care by LogPilot
+
+**如果这个项目对你有帮助，请给一个 ⭐ Star 支持一下！**
+
+Made with ❤️ by [Yanghh0220](https://github.com/Yanghh0220)
+
 </div>

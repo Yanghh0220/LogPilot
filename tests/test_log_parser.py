@@ -8,7 +8,7 @@
 # 如何运行？
 # 在项目根目录执行：pytest tests/test_log_parser.py -v
 
-from log_parser import detect_platform, extract_error_lines, truncate_log, parse_log
+from log_parser import detect_platform, extract_error_lines, truncate_log, parse_log, get_error_stats
 
 
 # ============================================
@@ -123,6 +123,62 @@ class TestTruncateLog:
         assert "line 0" in result
         # 尾部内容应该保留
         assert "line 199" in result
+
+
+# ============================================
+# 测试：日志统计
+# ============================================
+
+class TestGetErrorStats:
+    """测试 get_error_stats() 函数"""
+
+    def test_counts_errors(self):
+        """正确统计 error 关键词数量"""
+        log = "line1\nERROR: err1\nline3\nERROR: err2\nERROR: err3"
+        stats = get_error_stats(log)
+        assert stats["error_count"] == 3
+
+    def test_counts_warnings(self):
+        """正确统计 warning 关键词数量"""
+        log = "WARNING: w1\nsome line\nWARN: w2"
+        stats = get_error_stats(log)
+        assert stats["warning_count"] == 2
+
+    def test_counts_fatal(self):
+        """正确统计 fatal 关键词数量"""
+        log = "FATAL: crash\nline2\nFATAL: another crash"
+        stats = get_error_stats(log)
+        assert stats["fatal_count"] == 2
+
+    def test_counts_total_lines(self):
+        """正确统计日志总行数"""
+        log = "line1\nline2\nline3\nline4\nline5"
+        stats = get_error_stats(log)
+        assert stats["total_lines"] == 5
+
+    def test_empty_log(self):
+        """空日志返回全零统计"""
+        stats = get_error_stats("")
+        assert stats["total_lines"] == 0
+        assert stats["error_count"] == 0
+        assert stats["warning_count"] == 0
+        assert stats["fatal_count"] == 0
+
+    def test_no_errors(self):
+        """没有错误的日志返回零错误数"""
+        log = "Build started\nCompiling...\nBuild complete"
+        stats = get_error_stats(log)
+        assert stats["error_count"] == 0
+        assert stats["warning_count"] == 0
+        assert stats["fatal_count"] == 0
+
+    def test_returns_all_keys(self):
+        """返回字典包含所有必要字段"""
+        stats = get_error_stats("some log")
+        assert "total_lines" in stats
+        assert "error_count" in stats
+        assert "warning_count" in stats
+        assert "fatal_count" in stats
 
 
 # ============================================

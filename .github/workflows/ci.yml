@@ -1,0 +1,86 @@
+# .github/workflows/ci.yml - GitHub Actions CI 配置
+#
+# 作用：每次推送代码或提交 PR 时，自动运行代码检查和测试
+# 为什么需要 CI？
+# 1. 自动发现问题，避免低级 bug 合入主分支
+# 2. 保证代码风格一致
+# 3. 让协作者放心：过了 CI 的代码至少不会跑不起来
+
+name: CI
+
+# 触发条件
+on:
+  push:
+    branches: [main]      # 推送到 main 分支时触发
+  pull_request:
+    branches: [main]      # PR 目标是 main 分支时触发
+
+jobs:
+  # ========================================
+  #  Job 1: 代码检查 + 测试
+  # ========================================
+  lint-and-test:
+    name: 代码检查与测试
+    runs-on: ubuntu-latest    # 在最新的 Ubuntu 环境运行
+
+    steps:
+      # ---- Step 1: 检出代码 ----
+      # 为什么？CI 环境是全新的，需要先把代码拉下来
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      # ---- Step 2: 配置 Python 环境 ----
+      # 为什么指定 3.10？和项目最低支持版本保持一致
+      # pip-cache: 缓存已下载的包，加速后续构建
+      - name: 配置 Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          pip-cache: true
+
+      # ---- Step 3: 安装依赖 ----
+      # 分两步：项目依赖 + 开发工具（flake8/pytest）
+      - name: 安装项目依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install flake8 pytest
+
+      # ---- Step 4: flake8 第一遍 - 严重错误检查 ----
+      # 只检查会导致程序崩溃的错误（语法错误、未定义变量等）
+      # 这些错误必须修复，所以失败会阻断 CI
+      - name: flake8 严重错误检查（阻断）
+        run: |
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+
+      # ---- Step 5: flake8 第二遍 - 代码风格检查 ----
+      # 检查代码风格（命名规范、行长度等）
+      # exit-zero: 即使有警告也不阻断 CI
+      # max-line-length=120: 允许行长 120 字符（默认 79 太短了）
+      - name: flake8 代码风格检查（不阻断）
+        run: |
+          flake8 . --count --exit-zero --max-line-length=120 --statistics
+
+      # ---- Step 6: 运行测试 ----
+      # continue-on-error: 测试失败不阻断 CI
+      # 为什么？当前阶段测试可能还在完善中，不想因为测试阻断整个 CI
+      # 等测试稳定后，可以去掉这个选项
+      - name: 运行单元测试
+        run: |
+          pytest tests/ -v --tb=short
+        continue-on-error: true
+
+      # ---- Step 7: 检查必要文件 ----
+      # 确保项目的基本文件都存在（README、LICENSE、.env.example）
+      # 这些文件是开源项目的标配，缺失说明配置不完整
+      - name: 检查必要文件存在性
+        run: |
+          echo "检查项目必要文件..."
+          for file in README.md LICENSE .env.example; do
+            if [ ! -f "$file" ]; then
+              echo "❌ 缺少必要文件: $file"
+              exit 1
+            fi
+            echo "✅ $file 存在"
+          done
+          echo "所有必要文件检查通过！"
