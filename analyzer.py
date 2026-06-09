@@ -20,7 +20,7 @@ from openai import (
 from openai import BadRequestError
 from dotenv import load_dotenv
 
-from prompt import SYSTEM_PROMPT, build_analysis_prompt
+from prompt import SYSTEM_PROMPT, build_analysis_prompt, build_rag_augmented_prompt
 from log_parser import parse_log, get_error_stats
 from models import AnalysisResult
 from config import (
@@ -28,6 +28,12 @@ from config import (
     DEEPSEEK_MODEL,
     DEEPSEEK_TEMPERATURE,
     DEEPSEEK_API_KEY,
+    CACHE_ENABLED,
+    CACHE_SIMILARITY_HIGH,
+    CACHE_SIMILARITY_LOW,
+    CACHE_TTL_HOURS,
+    CACHE_QDRANT_PATH,
+    CACHE_EMBEDDING_MODEL,
 )
 
 # 加载 .env 文件中的环境变量
@@ -38,6 +44,54 @@ _client = OpenAI(
     base_url=DEEPSEEK_BASE_URL,
     api_key=DEEPSEEK_API_KEY,
 )
+
+
+# ============================================================
+#  语义缓存（延迟初始化单例）
+# ============================================================
+# 为什么延迟初始化？
+# - 避免模块加载时就触发 sentence-transformers / Qdrant 初始化
+# - 如果初始化失败，_cache 为 None，主流程不受影响
+
+def _get_cache():
+    """
+    获取或初始化 SemanticCache 单例
+
+    返回:
+        SemanticCache 实例，若初始化失败则返回 None
+    """
+    if not CACHE_ENABLED:
+        return None
+
+    try:
+        from cache_engine import SemanticCache
+        return SemanticCache(
+            embedding_model=CACHE_EMBEDDING_MODEL,
+            qdrant_path=CACHE_QDRANT_PATH or None,
+            similarity_high=CACHE_SIMILARITY_HIGH,
+            similarity_low=CACHE_SIMILARITY_LOW,
+            ttl_hours=CACHE_TTL_HOURS,
+        )
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(
+            "语义缓存初始化失败，将直接调用 AI: %s", e
+        )
+        return None
+
+
+# 模块级缓存实例（首次使用时初始化）
+_cache_instance = None
+_cache_initialized = False
+
+
+def _get_or_create_cache():
+    """获取缓存单例，首次调用时初始化"""
+    global _cache_instance, _cache_initialized
+    if not _cache_initialized:
+        _cache_instance = _get_cache()
+        _cache_initialized = True
+    return _cache_instance
 
 
 # ============================================================
@@ -232,9 +286,17 @@ def call_ai(prompt: str) -> str:
 
 def analyze_log(log_text: str) -> AnalysisResult:
     """
-    完整的日志分析流程：预处理 → 构建提示词 → 调用 AI → 解析结果
+    完整的日志分析流程：预处理 → 缓存检索 → 构建提示词 → 调用 AI → 解析结果
 
     这是 app.py 调用的主入口函数。
+
+    缓存策略（透明中间件，不影响主流程）：
+    1. 预处理后生成日志指纹
+    2. 查询语义缓存
+       - 相似度 >= 0.92：直接返回缓存结果（0 API 调用）
+       - 相似度 0.80~0.92：注入 RAG 上下文增强分析
+       - 相似度 < 0.80 或缓存不可用：走全新 AI 分析
+    3. AI 分析完成后写入缓存
 
     参数:
         log_text: 用户粘贴的构建日志原文
@@ -255,11 +317,37 @@ def analyze_log(log_text: str) -> AnalysisResult:
         raise ValueError("日志内容不能为空")
 
     # ---- 2. 预处理日志 ----
-    # 用 log_parser 识别平台、提取错误行、智能截断、统计信息
     parsed: dict = parse_log(log_text)
     stats: dict = get_error_stats(log_text)
 
-    # ---- 3. 构建提示词 ----
+    # ---- 3. 缓存检索（透明层，任何异常都降级到直接分析） ----
+    cache = _get_or_create_cache()
+    fingerprint: str | None = None
+    cached_result: AnalysisResult | None = None
+    rag_context: str = ""
+
+    if cache is not None:
+        try:
+            from cache_engine import generate_fingerprint
+            fingerprint = generate_fingerprint(parsed)
+            cached_result = cache.get(fingerprint, parsed)
+
+            if cached_result is not None:
+                # 高相似度命中，直接返回缓存结果
+                return cached_result
+
+            # 未命中高相似度，尝试获取 RAG 上下文
+            rag_context = cache.get_rag_context(fingerprint)
+
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                "缓存层异常，降级到直接分析: %s", e
+            )
+            # 缓存故障不影响主流程
+            rag_context = ""
+
+    # ---- 4. 构建提示词 ----
     user_prompt: str = build_analysis_prompt(
         source=parsed["platform"],
         error_lines=parsed["error_lines"],
@@ -267,16 +355,18 @@ def analyze_log(log_text: str) -> AnalysisResult:
         full_log_preview=parsed["truncated_log"],
     )
 
-    # ---- 4. 调用 AI ----
+    # 如果有 RAG 上下文，注入到提示词中
+    if rag_context:
+        user_prompt = build_rag_augmented_prompt(rag_context, user_prompt)
+
+    # ---- 5. 调用 AI ----
     result_text: str = call_ai(user_prompt)
 
     # 如果 call_ai 返回了错误提示（以 ⚠️ 开头），说明调用失败
     if result_text.startswith("⚠️"):
         raise ConnectionError(result_text)
 
-    # ---- 5. 解析 JSON ----
-    # AI 返回的是 JSON 字符串，需要转成 Python 字典
-    # 有时候 AI 会在 JSON 外面包裹 ```json ``` 代码块，先清理掉
+    # ---- 6. 解析 JSON ----
     cleaned: str = result_text.strip()
     if cleaned.startswith("```json"):
         cleaned = cleaned[7:]
@@ -293,5 +383,18 @@ def analyze_log(log_text: str) -> AnalysisResult:
             f"AI 返回的内容无法解析为 JSON，请重试。\n"
             f"原始内容: {cleaned[:300]}..."
         )
+
+    # ---- 7. 写入缓存（透明层，失败不影响返回） ----
+    if cache is not None and fingerprint is not None:
+        try:
+            cache.set(fingerprint, result, {
+                "platform": parsed["platform"],
+                "error_lines": parsed["error_lines"],
+            })
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                "缓存写入失败: %s", e
+            )
 
     return result

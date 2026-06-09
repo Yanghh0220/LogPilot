@@ -78,3 +78,25 @@ AI_TEMPERATURE = float(_get_secret("AI_TEMPERATURE", "0.2"))
 # ============================================
 CLAUDE_API_KEY = _get_secret("CLAUDE_API_KEY")
 CLAUDE_MODEL = _get_secret("CLAUDE_MODEL", "claude-sonnet-4-20250514")
+
+# ============================================
+# 语义缓存配置
+# ============================================
+
+# 缓存总开关（默认开启）
+CACHE_ENABLED = _get_secret("CACHE_ENABLED", "true").lower() == "true"
+
+# 语义相似度阈值：>= 此值直接返回缓存结果
+CACHE_SIMILARITY_HIGH = float(_get_secret("CACHE_SIMILARITY_HIGH", "0.92"))
+
+# 语义相似度阈值：>= 此值且 < HIGH 时注入 RAG 上下文
+CACHE_SIMILARITY_LOW = float(_get_secret("CACHE_SIMILARITY_LOW", "0.80"))
+
+# 缓存 TTL（小时），默认 30 天
+CACHE_TTL_HOURS = int(_get_secret("CACHE_TTL_HOURS", "720"))
+
+# Qdrant 存储路径，空字符串 = 内存模式
+CACHE_QDRANT_PATH = _get_secret("CACHE_QDRANT_PATH", "")
+
+# Embedding 模型名称
+CACHE_EMBEDDING_MODEL = _get_secret("CACHE_EMBEDDING_MODEL", "all-MiniLM-L6-v2")

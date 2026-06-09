@@ -40,23 +40,35 @@
 ## 📊 数据流架构
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        LogGazer 数据流架构                           │
-└─────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        LogGazer 数据流架构                               │
+└─────────────────────────────────────────────────────────────────────────┘
 
-  用户粘贴日志         log_parser.py          prompt.py
-  ┌──────────┐       ┌──────────────┐      ┌─────────────┐
-  │          │──────▶│  · 平台识别   │─────▶│  · 构建提示词 │
-  │  构建日志 │       │  · 错误提取   │      │  · Few-shot  │
-  │  (任意平台)│       │  · 智能截断   │      │  · 格式约束  │
-  └──────────┘       └──────────────┘      └──────┬──────┘
-                                                  │
-                                                  ▼
+  用户粘贴日志         log_parser.py          cache_engine.py
+  ┌──────────┐       ┌──────────────┐      ┌──────────────────┐
+  │          │──────▶│  · 平台识别   │─────▶│  · 生成日志指纹   │
+  │  构建日志 │       │  · 错误提取   │      │  · 向量相似度检索  │
+  │  (任意平台)│       │  · 智能截断   │      │  · Qdrant 本地存储 │
+  └──────────┘       └──────────────┘      └────────┬─────────┘
+                                                    │
+                              ┌──────────────────────┤
+                              │                      │
+                     命中缓存 (≥0.92)          未命中 / RAG (<0.92)
+                              │                      │
+                              ▼                      ▼
+                     直接返回缓存结果          prompt.py
+                     (0 API 调用)            ┌─────────────┐
+                                            │  · 构建提示词 │
+                                            │  · 注入 RAG  │
+                                            │    历史案例   │
+                                            └──────┬──────┘
+                                                   │
+                                                   ▼
   Streamlit UI          config.py          analyzer.py
   ┌──────────────┐     ┌──────────┐      ┌──────────────┐
   │  · 错误摘要   │◀────│ 环境变量  │◀─────│  · 调用 DeepSeek│
   │  · 根因分析   │     │ API Key  │      │  · 解析 JSON   │
-  │  · 修复建议   │     │ 模型配置  │      │  · 异常处理    │
+  │  · 修复建议   │     │ 模型配置  │      │  · 写入缓存    │
   │  · 排查命令   │     └──────────┘      └──────────────┘
   │  · 一键复制   │
   └──────────────┘
@@ -77,6 +89,7 @@
 | 📋 一键复制 | 每个命令都可以一键复制到终端 |
 | 📄 内置示例 | 3 种常见日志示例（npm / Docker / pytest），零门槛体验 |
 | 🧠 智能预处理 | 自动识别平台、提取关键错误行、截断超长日志 |
+| ⚡ 语义缓存 | 相同/相似日志秒级返回，零 API 调用，历史案例自动积累 |
 
 ### 支持的日志来源
 
@@ -159,14 +172,67 @@
    └────────────────────┘
 ```
 
+## ⚡ 语义缓存架构
+
+LogGazer 内置基于向量检索的语义缓存层，对重复或相似的日志分析实现**零 API 调用**。
+
+### 缓存策略（三级阈值）
+
+```
+相似度 ≥ 0.92  →  直接返回缓存结果（0 API 调用，毫秒级响应）
+0.80 ≤ 相似度 < 0.92  →  注入 RAG 历史案例，增强 AI 分析
+相似度 < 0.80  →  走全新 AI 分析，结果写入缓存
+```
+
+### 数据流
+
+```
+日志输入 → log_parser 提取 error_lines + platform
+         → 标准化指纹（去时间戳/内存地址/UUID 等动态噪声）
+         → SHA-256 精确匹配 + sentence-transformers 向量检索
+         → Qdrant 本地向量库（内存模式 / 文件持久化）
+```
+
+### 技术选型
+
+| 组件 | 选型 | 理由 |
+|------|------|------|
+| Embedding | sentence-transformers (all-MiniLM-L6-v2) | 纯本地运行，384 维，零 API 成本 |
+| 向量数据库 | Qdrant (本地内存模式) | 零外部依赖，无需 Docker/云服务 |
+| 距离度量 | Cosine | 适合文本嵌入，对长度变化不敏感 |
+| 指纹生成 | SHA-256(normalized error_lines + platform) | 去动态噪声后精确匹配 |
+
+### 缓存一致性
+
+- **TTL 机制**：默认 30 天过期，防止过时修复命令
+- **置信度衰减**：24h 后每 24h 下降 0.05，最低 0.5
+- **平台隔离**：按 platform 过滤，npm 错误不会匹配 Docker 错误
+- **优雅降级**：缓存层任何故障（Qdrant 崩溃 / Embedding 失败 / 磁盘满）自动降级到直接 AI 调用
+
+### 配置项
+
+在 `.env` 中可配置：
+
+```bash
+CACHE_ENABLED=true                    # 缓存总开关
+CACHE_SIMILARITY_HIGH=0.92            # 直接命中阈值
+CACHE_SIMILARITY_LOW=0.80             # RAG 上下文阈值
+CACHE_TTL_HOURS=720                   # 缓存过期时间（小时）
+CACHE_QDRANT_PATH=                    # 空 = 内存模式，路径 = 文件持久化
+CACHE_EMBEDDING_MODEL=all-MiniLM-L6-v2  # Embedding 模型
+```
+
+---
+
 ## ⚙️ 工程特性
 
 | 特性 | 实现方式 |
 |------|---------|
+| ⚡ 语义缓存 | 本地 Embedding + Qdrant 向量检索，重复日志零 API 调用 |
 | 🔄 自动重试 | 指数退避策略，超时/连接错误重试最多3次（1s→2s→4s） |
 | 🔐 异常分类 | 自定义 AuthError/RateLimitError/QuotaError，对用户友好提示 |
-| 📝 Prompt工程 | Few-shot示例约束输出格式，temperature=0.2保证稳定性 |
-| 🧪 单元测试 | pytest覆盖核心逻辑，20+测试用例 |
+| 📝 Prompt工程 | Few-shot示例 + RAG 历史案例注入，temperature=0.2保证稳定性 |
+| 🧪 单元测试 | pytest覆盖核心逻辑，100+测试用例（含缓存集成测试） |
 | 🔄 CI/CD | GitHub Actions自动运行代码检查和测试 |
 | 📊 日志预处理 | 关键词提取+上下文截取，token消耗降低~80% |
 
@@ -239,11 +305,13 @@ pytest tests/test_log_parser.py -v
 LogGazer/
 ├── app.py                  # 🎨 Streamlit 前端主入口
 ├── ai_engine.py            # 🤖 AI 调用引擎（重试机制 + 异常分类 + API 调用）
-├── analyzer.py             # 🧠 日志分析（平台识别 + 错误提取 + 统计）
-├── prompts.py              # 📝 Prompt 工程（系统提示词 + Few-shot + 用户提示词构建）
+├── analyzer.py             # 🧠 日志分析（缓存集成 + AI 调用 + JSON 解析）
+├── cache_engine.py         # ⚡ 语义缓存引擎（指纹生成 + 向量检索 + RAG 上下文）
+├── prompt.py               # 📝 Prompt 工程（系统提示词 + Few-shot + RAG 增强）
+├── prompts.py              # 📝 Prompt 工程（Markdown 格式，备用）
 ├── log_parser.py           # 🔍 日志预处理（平台识别 / 错误提取 / 智能截断）
 ├── models.py               # 📐 类型定义（TypedDict）
-├── config.py               # ⚙️ 配置管理（环境变量读取）
+├── config.py               # ⚙️ 配置管理（环境变量 + 缓存配置）
 ├── style.css               # 🎨 全局 CSS 样式
 ├── .env.example            # 🔑 环境变量模板
 ├── requirements.txt        # 📦 Python 依赖清单
@@ -253,10 +321,12 @@ LogGazer/
 ├── .streamlit/
 │   └── config.toml         # Streamlit UI 配置
 ├── tests/                  # 🧪 单元测试
-│   ├── conftest.py         #    Pytest 配置（sys.path 处理）
+│   ├── conftest.py         #    Pytest 配置（sys.path + OpenAI mock）
 │   ├── test_analyzer.py    #    日志分析模块测试
+│   ├── test_analyzer_integration.py  # 缓存集成测试
+│   ├── test_cache_engine.py          # 语义缓存引擎测试
 │   ├── test_log_parser.py  #    日志解析模块测试
-│   └── test_prompt.py      #    Prompt 模块测试
+│   └── test_prompt.py      #    Prompt 模块测试（含 RAG 增强测试）
 ├── CLAUDE.md               # 🤖 AI 结对编程指南
 ├── LICENSE                 # 📄 MIT 开源许可证
 └── README.md               # 📖 项目说明（你正在看的这个）
@@ -272,6 +342,8 @@ LogGazer/
 | **后端** | Python 3.10+ | 简洁、生态好、新手友好 |
 | **AI 模型** | DeepSeek V3 | 性价比高，中文能力强 |
 | **AI SDK** | OpenAI Python SDK | DeepSeek 兼容 OpenAI 接口，换模型零改动 |
+| **Embedding** | sentence-transformers | 纯本地运行，零 API 成本，384 维向量 |
+| **向量数据库** | Qdrant (本地模式) | 内存/文件模式，无需外部服务 |
 | **测试** | Pytest | Python 社区标准，上手简单 |
 | **配置** | python-dotenv | 安全存储 API Key，不硬编码 |
 

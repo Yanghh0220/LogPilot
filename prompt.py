@@ -238,3 +238,48 @@ def build_analysis_prompt(
     )
 
     return "\n\n".join(parts)
+
+
+# ============================================================
+#  RAG 增强提示词构建
+# ============================================================
+
+# RAG 上下文模板
+# 为什么限制 3 条 + 100 字？
+# - 太多历史案例会稀释主日志信息，干扰 AI 判断
+# - 100 字足够传递关键信息（平台、错误摘要、修复命令）
+# - 明确告知 AI "仅作参考" 防止直接套用过时命令
+_RAG_SECTION_TEMPLATE = """
+
+【历史相似案例参考】
+⚠️ 以下案例为历史日志的修复记录，仅作参考，不要直接套用命令。
+请结合当前日志的具体情况独立分析，历史案例仅用于辅助判断。
+
+{rag_context}
+"""
+
+
+def build_rag_augmented_prompt(
+    rag_context: str, base_prompt: str
+) -> str:
+    """
+    在基础提示词末尾注入 RAG 历史案例上下文
+
+    参数:
+        rag_context: get_rag_context() 返回的 Markdown 格式历史案例
+        base_prompt: build_analysis_prompt() 生成的基础提示词
+
+    返回:
+        拼接后的完整提示词
+
+    防幻觉设计：
+    1. RAG 上下文最多 3 条案例（由 get_rag_context 控制 top_k）
+    2. 每条案例限制 100 字（由 get_rag_context 截断）
+    3. 明确告知 AI "仅作参考，不要直接套用命令"
+    4. RAG 部分放在末尾，避免覆盖主日志的关键信息
+    """
+    if not rag_context or not rag_context.strip():
+        return base_prompt
+
+    rag_section = _RAG_SECTION_TEMPLATE.format(rag_context=rag_context)
+    return base_prompt + rag_section

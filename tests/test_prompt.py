@@ -8,7 +8,7 @@
 # 如何运行？
 # 在项目根目录执行：pytest tests/test_prompt.py -v
 
-from prompt import SYSTEM_PROMPT, build_analysis_prompt
+from prompt import SYSTEM_PROMPT, build_analysis_prompt, build_rag_augmented_prompt
 
 
 # ============================================
@@ -194,3 +194,56 @@ class TestBuildAnalysisPrompt:
         assert "medium" in result
         assert "200" in result
         assert "100%" in result  # 百分比约束
+
+
+# ============================================
+#  测试：RAG 增强提示词
+# ============================================
+
+class TestBuildRAGAugmentedPrompt:
+    """测试 build_rag_augmented_prompt() 函数"""
+
+    def test_injects_rag_context(self):
+        """RAG 上下文正确注入到提示词末尾"""
+        base = "请分析以下日志"
+        rag = "- **[npm]** 依赖冲突\n  修复命令: `npm install --legacy-peer-deps` (命中 5 次)"
+        result = build_rag_augmented_prompt(rag, base)
+        assert "历史相似案例参考" in result
+        assert "仅作参考" in result
+        assert "依赖冲突" in result
+        assert "legacy-peer-deps" in result
+
+    def test_preserves_base_prompt(self):
+        """原始提示词内容完整保留"""
+        base = "【日志来源平台】npm\n\n【完整日志】\nERROR: build failed"
+        rag = "- **[npm]** test\n  修复命令: `cmd` (命中 1 次)"
+        result = build_rag_augmented_prompt(rag, base)
+        assert "日志来源平台" in result
+        assert "ERROR: build failed" in result
+
+    def test_empty_context_returns_base(self):
+        """空 RAG 上下文返回原始提示词"""
+        base = "original prompt"
+        assert build_rag_augmented_prompt("", base) == base
+
+    def test_whitespace_only_context_returns_base(self):
+        """纯空白 RAG 上下文返回原始提示词"""
+        base = "original prompt"
+        assert build_rag_augmented_prompt("   \n  ", base) == base
+
+    def test_disclaimer_present(self):
+        """包含防幻觉声明"""
+        base = "base"
+        rag = "- **[npm]** error\n  修复: `cmd` (命中 1 次)"
+        result = build_rag_augmented_prompt(rag, base)
+        assert "不要直接套用命令" in result
+
+    def test_rag_section_at_end(self):
+        """RAG 部分在提示词末尾"""
+        base = "【完整日志】\nlog content"
+        rag = "- **[npm]** test\n  修复: `cmd` (命中 1 次)"
+        result = build_rag_augmented_prompt(rag, base)
+        # RAG 部分应该在最后
+        rag_pos = result.index("历史相似案例参考")
+        log_pos = result.index("完整日志")
+        assert rag_pos > log_pos
