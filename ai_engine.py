@@ -394,9 +394,13 @@ def call_ai(system_prompt: str, user_prompt: str) -> str:
     if not api_key or api_key == "your_api_key_here":
         return (
             f"⚠️ **API Key 未配置**\n\n"
-            f"请在项目根目录的 `.env` 文件中填入你的 {platform_name} API Key：\n\n"
+            f"**本地开发：** 在项目根目录的 `.env` 文件中填入你的 {platform_name} API Key：\n\n"
             "```\n"
-            f"{platform_name.upper()}_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx\n"
+            f"DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx\n"
+            "```\n\n"
+            f"**Streamlit Cloud：** 在 App 设置 → Secrets 中添加：\n\n"
+            "```toml\n"
+            "API_KEY = \"sk-xxxxxxxxxxxxxxxxxxxxxxxx\"\n"
             "```\n\n"
             f"👉 获取地址：{platform_url}"
         )
@@ -416,10 +420,9 @@ def call_ai(system_prompt: str, user_prompt: str) -> str:
         logger.error(f"认证失败：{e.message}")
         return (
             "⚠️ **API Key 无效或已过期**\n\n"
-            "请检查 `.env` 文件中的 API Key 是否正确：\n\n"
-            "```\n"
-            f"DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx\n"
-            "```\n\n"
+            "请检查你的 API Key 是否正确：\n\n"
+            "- **本地开发：** 检查 `.env` 文件中的 `DEEPSEEK_API_KEY`\n"
+            "- **Streamlit Cloud：** 检查 App → Settings → Secrets 中的 `API_KEY`\n\n"
             f"👉 前往 [{platform_name} 控制台]({platform_url}) 获取或重置 Key"
         )
 
