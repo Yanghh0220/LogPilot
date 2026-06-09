@@ -5,6 +5,60 @@ import streamlit as st
 from analyzer import analyze_log
 
 # ============================================
+# 可观测性初始化（全局单例）
+# ============================================
+import logging
+
+logger = logging.getLogger(__name__)
+
+# 延迟初始化 ObservabilityManager（避免循环导入）
+_observability = None
+
+
+def _get_observability():
+    """获取或初始化全局 ObservabilityManager 实例"""
+    global _observability
+    if _observability is None:
+        try:
+            import metrics_server
+            from observability import ObservabilityManager
+            import ai_engine
+
+            # 尝试连接 Redis（可选，失败时降级到内存模式）
+            redis_client = None
+            try:
+                import redis
+                redis_client = redis.Redis(
+                    host="localhost",
+                    port=6379,
+                    db=0,
+                    decode_responses=True,
+                    socket_connect_timeout=2,
+                )
+                redis_client.ping()
+                logger.info("Redis 连接成功")
+            except Exception:
+                logger.info("Redis 不可用，使用内存降级模式")
+                redis_client = None
+
+            # 创建 ObservabilityManager
+            _observability = ObservabilityManager(
+                redis_client=redis_client,
+                monthly_budget=50.0,
+                sampling_rate=0.1,  # 生产环境 10% 采样
+            )
+
+            # 注入到 ai_engine
+            ai_engine.set_observability(_observability)
+
+            # 启动 Metrics Server（独立线程，不阻塞 Streamlit）
+            metrics_server.start(port=9090)
+
+        except Exception as e:
+            logger.warning("可观测性初始化失败（不影响核心功能）: %s", e)
+    return _observability
+
+# ============================================
 # 页面配置
 # ============================================
 st.set_page_config(
@@ -204,25 +258,74 @@ if analyze_clicked:
     if not log_input.strip():
         st.warning("请先粘贴日志内容")
     else:
+        # 初始化可观测性（首次调用时）
+        obs = _get_observability()
+
+        # ---- 限流检查 ----
+        if obs:
+            allowed, retry_after = obs.check_rate_limit(
+                user_id="anonymous",
+                max_requests=5,
+                window_seconds=60,
+            )
+            if not allowed:
+                st.warning(f"⚠️ 请求过于频繁，请等待 {retry_after}s 后重试")
+                st.stop()
+
+        # ---- 成本熔断器检查 ----
+        if obs:
+            cb_status = obs.check_cost_circuit_breaker()
+            if cb_status == "tripped":
+                st.error(
+                    "🚫 **本月分析额度已用尽**\n\n"
+                    "已切换至本地轻量模型，准确率可能有所下降。\n"
+                    "如需恢复完整功能，请联系管理员提升预算。"
+                )
+                st.stop()
+            elif cb_status == "warning":
+                st.warning("⚠️ 本月分析额度已使用 80% 以上，请注意控制用量。")
+
+        # ---- 带追踪的分析 ----
+        cache_status = "miss"  # 默认，实际值由 analyzer 决定
+        if obs:
+            obs.increment_active_requests()
+
         with st.spinner("正在分析..."):
             try:
-                result = analyze_log(log_input)
+                # 使用 trace_analysis 上下文管理器包裹分析调用
+                if obs:
+                    with obs.trace_analysis(platform="unknown", cache_status=cache_status) as ctx:
+                        result = analyze_log(log_input)
+                else:
+                    result = analyze_log(log_input)
+
             except ValueError as e:
                 # 输入为空或 JSON 解析失败
+                if obs:
+                    obs.record_error("validation")
                 st.error(f"输入错误：{str(e)}")
                 st.stop()
             except RuntimeError as e:
                 # API Key 未配置或 AI 返回空内容
+                if obs:
+                    obs.record_error("auth")
                 st.error(f"配置错误：{str(e)}")
                 st.stop()
             except ConnectionError as e:
                 # API 调用失败（网络、认证、余额等）
+                if obs:
+                    obs.record_error("network")
                 st.error(f"网络错误：{str(e)}")
                 st.stop()
             except Exception as e:
                 # 其他未知异常
+                if obs:
+                    obs.record_error("network")
                 st.error(f"分析失败：{str(e)}")
                 st.stop()
+            finally:
+                if obs:
+                    obs.decrement_active_requests()
 
         # 状态标签
         st.markdown("""

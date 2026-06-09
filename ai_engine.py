@@ -17,6 +17,7 @@ import json
 import re
 import time
 import logging
+import contextlib
 import functools
 from typing import Optional, Callable, Any
 
@@ -32,6 +33,54 @@ from config import (
     CLAUDE_API_KEY,
     CLAUDE_MODEL,
 )
+from cost_calculator import CostCalculator
+
+
+# ============================================================
+#  可观测性集成（延迟加载，避免循环依赖）
+# ============================================================
+
+_observability_instance = None
+
+
+def _get_observability():
+    """获取全局 ObservabilityManager 实例（延迟加载）"""
+    global _observability_instance
+    if _observability_instance is None:
+        try:
+            from observability import ObservabilityManager
+            _observability_instance = ObservabilityManager()
+        except Exception:
+            pass
+    return _observability_instance
+
+
+def set_observability(obs):
+    """注入 ObservabilityManager 实例（由 app.py 调用）"""
+    global _observability_instance
+    _observability_instance = obs
+
+
+def _classify_error(exception: Exception) -> str:
+    """将异常分类为 error_type 标签值"""
+    if isinstance(exception, AuthError):
+        return "auth"
+    elif isinstance(exception, RateLimitError):
+        return "rate_limit"
+    elif isinstance(exception, QuotaError):
+        return "quota"
+    elif isinstance(exception, (requests.exceptions.Timeout, requests.exceptions.ConnectionError)):
+        return "network"
+    elif isinstance(exception, (json.JSONDecodeError, KeyError, ValueError)):
+        return "parse"
+    else:
+        return "network"
+
+
+@contextlib.contextmanager
+def _null_context():
+    """空上下文管理器（当 ObservabilityManager 不可用时使用）"""
+    yield None
 
 
 # ============================================================
@@ -166,29 +215,59 @@ def _call_openai_compatible(
     """
     logger.info(f"调用 OpenAI 兼容接口，模型：{DEEPSEEK_MODEL}")
 
-    url = f"{DEEPSEEK_BASE_URL.rstrip('/')}/v1/chat/completions"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-    }
-    payload = {
-        "model": DEEPSEEK_MODEL,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        "temperature": temperature if temperature is not None else AI_TEMPERATURE,
-    }
+    obs = _get_observability()
+    effective_temp = temperature if temperature is not None else AI_TEMPERATURE
 
-    response = requests.post(url, headers=headers, json=payload, timeout=60)
+    with obs.trace_ai_call(
+        provider="deepseek",
+        model=DEEPSEEK_MODEL,
+        temperature=effective_temp,
+        prompt_length=len(system_prompt) + len(user_prompt),
+    ) if obs else _null_context():
+        url = f"{DEEPSEEK_BASE_URL.rstrip('/')}/v1/chat/completions"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        }
+        payload = {
+            "model": DEEPSEEK_MODEL,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": effective_temp,
+        }
 
-    if response.status_code != 200:
-        error = _parse_http_error(response)
-        raise error
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=60)
+        except Exception as e:
+            if obs:
+                obs.record_error(_classify_error(e))
+            raise
 
-    result: dict = response.json()
-    content: str = result["choices"][0]["message"]["content"]
-    return content
+        if response.status_code != 200:
+            error = _parse_http_error(response)
+            if obs:
+                obs.record_error(_classify_error(error))
+            raise error
+
+        result: dict = response.json()
+        content: str = result["choices"][0]["message"]["content"]
+
+        # 记录 Token 消耗
+        if obs:
+            usage = result.get("usage", {})
+            input_tokens = usage.get("prompt_tokens", CostCalculator.estimate_tokens(system_prompt + user_prompt))
+            output_tokens = usage.get("completion_tokens", CostCalculator.estimate_tokens(content))
+            obs.record_tokens(
+                model=DEEPSEEK_MODEL,
+                provider="deepseek",
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                status="success",
+            )
+
+        return content
 
 
 # ============================================================
@@ -203,29 +282,58 @@ def _call_claude(
     """调用 Anthropic Claude API"""
     logger.info(f"调用 Claude 接口，模型：{CLAUDE_MODEL}")
 
-    url = "https://api.anthropic.com/v1/messages"
-    headers = {
-        "Content-Type": "application/json",
-        "x-api-key": CLAUDE_API_KEY,
-        "anthropic-version": "2023-06-01",
-    }
-    payload = {
-        "model": CLAUDE_MODEL,
-        "max_tokens": 4096,
-        "system": system_prompt,
-        "messages": [{"role": "user", "content": user_prompt}],
-        "temperature": AI_TEMPERATURE,
-    }
+    obs = _get_observability()
 
-    response = requests.post(url, headers=headers, json=payload, timeout=60)
+    with obs.trace_ai_call(
+        provider="claude",
+        model=CLAUDE_MODEL,
+        temperature=AI_TEMPERATURE,
+        prompt_length=len(system_prompt) + len(user_prompt),
+    ) if obs else _null_context():
+        url = "https://api.anthropic.com/v1/messages"
+        headers = {
+            "Content-Type": "application/json",
+            "x-api-key": CLAUDE_API_KEY,
+            "anthropic-version": "2023-06-01",
+        }
+        payload = {
+            "model": CLAUDE_MODEL,
+            "max_tokens": 4096,
+            "system": system_prompt,
+            "messages": [{"role": "user", "content": user_prompt}],
+            "temperature": AI_TEMPERATURE,
+        }
 
-    if response.status_code != 200:
-        error = _parse_http_error(response)
-        raise error
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=60)
+        except Exception as e:
+            if obs:
+                obs.record_error(_classify_error(e))
+            raise
 
-    result: dict = response.json()
-    content: str = result["content"][0]["text"]
-    return content
+        if response.status_code != 200:
+            error = _parse_http_error(response)
+            if obs:
+                obs.record_error(_classify_error(error))
+            raise error
+
+        result: dict = response.json()
+        content: str = result["content"][0]["text"]
+
+        # 记录 Token 消耗
+        if obs:
+            usage = result.get("usage", {})
+            input_tokens = usage.get("input_tokens", CostCalculator.estimate_tokens(system_prompt + user_prompt))
+            output_tokens = usage.get("output_tokens", CostCalculator.estimate_tokens(content))
+            obs.record_tokens(
+                model=CLAUDE_MODEL,
+                provider="claude",
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                status="success",
+            )
+
+        return content
 
 
 # ============================================================
@@ -239,6 +347,20 @@ def call_ai_legacy(system_prompt: str, user_prompt: str) -> str:
     作为 Instructor 结构化生成的降级路径。
     异常时返回以 "⚠️" 开头的 Markdown 错误提示。
     """
+    from observability import CircuitBreakerError
+
+    # 检查成本熔断器
+    obs = _get_observability()
+    if obs:
+        cb_status = obs.check_cost_circuit_breaker()
+        if cb_status == "tripped":
+            logger.warning("成本熔断器触发，拒绝 API 调用")
+            return (
+                "⚠️ **本月分析额度已用尽**\n\n"
+                "已切换至本地轻量模型，准确率可能有所下降。\n"
+                "如需恢复完整功能，请联系管理员提升预算。"
+            )
+
     # 检查 API Key
     if AI_PROVIDER == "claude":
         api_key = CLAUDE_API_KEY
@@ -266,22 +388,32 @@ def call_ai_legacy(system_prompt: str, user_prompt: str) -> str:
 
     except AuthError as e:
         logger.error(f"认证失败：{e.message}")
+        if obs:
+            obs.record_error("auth")
         return f"⚠️ **API Key 无效或已过期**\n\n{e.message}"
 
     except RateLimitError as e:
         logger.error(f"频率超限：{e.message}")
+        if obs:
+            obs.record_error("rate_limit")
         return "⚠️ **请求频率超限**\n\n请等待 30 秒后重试。"
 
     except QuotaError as e:
         logger.error(f"余额不足：{e.message}")
+        if obs:
+            obs.record_error("quota")
         return f"⚠️ **账户余额不足**\n\n请前往 {platform_url} 充值。"
 
     except APIError as e:
         logger.error(f"API 错误（{e.status_code}）：{e.message}")
+        if obs:
+            obs.record_error("network")
         return f"⚠️ **API 调用失败**\n\n{e.message}"
 
     except Exception as e:
         logger.error(f"未知异常：{type(e).__name__}: {str(e)[:200]}")
+        if obs:
+            obs.record_error("network")
         return f"⚠️ **发生了未知错误**\n\n`{type(e).__name__}: {str(e)[:200]}`"
 
 
@@ -449,6 +581,18 @@ def call_ai_structured(
         AnalysisResult 实例
     """
     from models import AnalysisResult
+
+    # 检查成本熔断器
+    obs = _get_observability()
+    if obs:
+        cb_status = obs.check_cost_circuit_breaker()
+        if cb_status == "tripped":
+            logger.warning("成本熔断器触发，拒绝结构化生成调用")
+            from ai_engine import _create_fallback_model
+            return _create_fallback_model(
+                AnalysisResult,
+                "本月分析额度已用尽，已切换至本地轻量模型"
+            )
 
     client = _get_instructor_client()
 

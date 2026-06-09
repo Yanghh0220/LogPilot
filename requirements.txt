@@ -16,3 +16,10 @@ qdrant-client>=1.7.0          # 向量数据库（本地内存模式）
 # ---- Multi-Agent 协作依赖 ----
 langgraph>=0.2.0              # LangGraph 状态图框架（多 Agent 编排）
 langchain-core>=0.2.0         # LangChain 核心（LangGraph 依赖，最小集）
+
+# ---- 可观测性依赖 ----
+prometheus-client>=0.20.0     # Prometheus 指标暴露（/metrics 端点）
+opentelemetry-api>=1.20.0     # OpenTelemetry API（链路追踪接口）
+opentelemetry-sdk>=1.20.0     # OpenTelemetry SDK（TracerProvider 实现）
+opentelemetry-exporter-otlp-proto-http>=1.20.0  # OTLP HTTP Exporter（可选，生产环境用）
+redis>=5.0.0                  # Redis 客户端（限流 + 成本统计持久化）
