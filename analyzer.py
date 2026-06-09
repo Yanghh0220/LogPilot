@@ -339,7 +339,50 @@ def analyze_log(log_text: str) -> AnalysisResult:
         except Exception as e:
             logger.warning("缓存写入失败: %s", e)
 
+    # ---- 9. 错误指纹 + 智能聚类（透明层，失败不影响返回） ----
+    _store_to_cluster_engine(log_text, parsed, result)
+
     return result
+
+
+def _store_to_cluster_engine(
+    log_text: str, parsed: dict, result: "AnalysisResult"
+) -> None:
+    """
+    将分析结果存入聚类引擎（透明层）
+
+    流程：
+    1. 提取错误指纹
+    2. 分配到聚类簇
+    3. 存储完整分析记录（含压缩原始日志）
+
+    任何异常静默忽略，不影响主流程。
+    """
+    try:
+        from fingerprint_engine import get_fingerprint_engine
+        from cluster_engine import get_cluster_engine
+
+        fp_engine = get_fingerprint_engine()
+        cluster_engine = get_cluster_engine()
+
+        # 提取指纹
+        fp = fp_engine.fingerprint(
+            parsed["error_lines"], parsed["platform"]
+        )
+
+        # 分配到簇
+        cluster_id = cluster_engine.assign_cluster(fp)
+
+        # 存储完整分析记录
+        cluster_engine.store_analysis(
+            raw_log=log_text,
+            fingerprint=fp,
+            result=result,
+            cluster_id=cluster_id,
+        )
+
+    except Exception as e:
+        logger.debug("聚类引擎存储失败（不影响主流程）: %s", e)
 
 
 def _legacy_analyze(user_prompt: str) -> AnalysisResult:
@@ -488,6 +531,9 @@ def analyze_log_advanced(log_text: str) -> AnalysisResult:
                 })
             except Exception as e:
                 logger.warning("[Advanced] 缓存写入失败: %s", e)
+
+        # 存入聚类引擎
+        _store_to_cluster_engine(log_text, parsed, result)
 
         elapsed = time.time() - start_time
         logger.info("[Advanced] 分析完成，耗时 %.2fs", elapsed)

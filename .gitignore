@@ -12,3 +12,8 @@ venv/
 # IDE 配置
 .vscode/
 .idea/
+
+# SQLite 数据库（运行时生成）
+loggazer.db
+loggazer.db-wal
+loggazer.db-shm

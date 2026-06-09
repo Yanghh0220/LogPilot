@@ -17,6 +17,9 @@ qdrant-client>=1.7.0          # 向量数据库（本地内存模式）
 langgraph>=0.2.0              # LangGraph 状态图框架（多 Agent 编排）
 langchain-core>=0.2.0         # LangChain 核心（LangGraph 依赖，最小集）
 
+# ---- 错误指纹 + 智能聚类依赖 ----
+datasketch>=1.6.0          # MinHash + LSH（局部敏感哈希，快速近似聚类）
+
 # ---- 可观测性依赖 ----
 prometheus-client>=0.20.0     # Prometheus 指标暴露（/metrics 端点）
 opentelemetry-api>=1.20.0     # OpenTelemetry API（链路追踪接口）

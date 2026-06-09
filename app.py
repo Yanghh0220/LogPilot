@@ -11,6 +11,12 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# ============================================
+# 页面导航（Sidebar 切换）
+# ============================================
+if "page" not in st.session_state:
+    st.session_state["page"] = "analysis"
+
 # 延迟初始化 ObservabilityManager（避免循环导入）
 _observability = None
 
@@ -84,9 +90,22 @@ with st.sidebar:
     st.markdown("""
     <div style="padding: 8px 0 4px;">
         <div style="font-size: 1.2rem; font-weight: 700; color: #1a1a1a;">📋 LogGazer</div>
-        <div style="font-size: 0.78rem; color: #a3a3a3; margin-top: 2px;">v1.0.0</div>
+        <div style="font-size: 0.78rem; color: #a3a3a3; margin-top: 2px;">v1.1.0</div>
     </div>
     """, unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    # ---- 页面导航 ----
+    nav_col1, nav_col2 = st.columns(2)
+    with nav_col1:
+        if st.button("🔍 日志分析", use_container_width=True,
+                      type="primary" if st.session_state["page"] == "analysis" else "secondary"):
+            st.session_state["page"] = "analysis"
+    with nav_col2:
+        if st.button("📊 团队洞察", use_container_width=True,
+                      type="primary" if st.session_state["page"] == "dashboard" else "secondary"):
+            st.session_state["page"] = "dashboard"
 
     st.markdown("---")
 
@@ -145,7 +164,150 @@ with st.sidebar:
     """, unsafe_allow_html=True)
 
 # ============================================
-# 示例日志
+# 页面路由
+# ============================================
+if st.session_state["page"] == "dashboard":
+    # ---- 团队洞察 Dashboard ----
+    st.markdown("""
+    <div class="page-header">
+        <div class="page-title">📊 团队洞察 Dashboard</div>
+        <div class="page-desc">错误指纹聚类 · 趋势分析 · 修复建议聚合</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    try:
+        from cluster_engine import get_cluster_engine
+        from analytics_dashboard import (
+            generate_weekly_report,
+            get_trend_chart_data,
+            get_platform_distribution,
+        )
+
+        cluster_engine = get_cluster_engine()
+
+        # 总览指标
+        insight_col1, insight_col2, insight_col3 = st.columns(3)
+
+        conn = cluster_engine._get_conn()
+        try:
+            total_analyses = conn.execute(
+                "SELECT COUNT(*) FROM analysis_log"
+            ).fetchone()[0]
+            active_clusters = conn.execute(
+                "SELECT COUNT(*) FROM error_cluster WHERE is_active = 1"
+            ).fetchone()[0]
+            resolved_count = conn.execute(
+                "SELECT COUNT(*) FROM analysis_log "
+                "WHERE resolution_status = 'resolved'"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+        with insight_col1:
+            st.metric("总分析次数", total_analyses)
+        with insight_col2:
+            st.metric("活跃错误簇", active_clusters)
+        with insight_col3:
+            st.metric("已解决", resolved_count)
+
+        st.markdown("---")
+
+        # 趋势图 + 平台分布
+        chart_col1, chart_col2 = st.columns([2, 1])
+
+        with chart_col1:
+            st.subheader("📈 每日分析趋势")
+            trend_data = get_trend_chart_data(cluster_engine, days=7)
+            if trend_data["counts"]:
+                st.line_chart(
+                    data=dict(zip(trend_data["dates"], trend_data["counts"])),
+                    use_container_width=True,
+                )
+            else:
+                st.info("暂无数据，分析日志后将自动记录趋势。")
+
+        with chart_col2:
+            st.subheader("🖥️ 平台分布")
+            platform_data = get_platform_distribution(cluster_engine)
+            if platform_data:
+                st.bar_chart(platform_data, use_container_width=True)
+            else:
+                st.info("暂无数据。")
+
+        st.markdown("---")
+
+        # Top 高频簇
+        st.subheader("🔥 Top-5 高频错误簇")
+        trending = cluster_engine.get_trending_clusters(days=7, top_n=5)
+        if trending:
+            for cluster in trending:
+                cid = cluster.get("cluster_id", "?")
+                count = cluster.get("recent_count", 0)
+                total = cluster.get("occurrence_count", 0)
+                dist = cluster.get("platform_distribution", {})
+                platforms = ", ".join(
+                    f"{k}({v})" for k, v in sorted(
+                        dist.items(), key=lambda x: -x[1]
+                    )
+                )
+                severity = cluster.get("avg_severity_score", 0) or 0
+                severity_icon = (
+                    "🔴" if severity >= 3.5
+                    else "🟠" if severity >= 2.5
+                    else "🟡" if severity >= 1.5
+                    else "🟢"
+                )
+
+                with st.expander(
+                    f"{severity_icon} 簇 #{cid} — 本周 {count} 次 (累计 {total} 次) "
+                    f"| {platforms or 'N/A'}"
+                ):
+                    samples = cluster.get("representative_samples", [])
+                    if samples:
+                        st.markdown("**代表性错误**:")
+                        for s in samples:
+                            st.code(
+                                s.get("fingerprint", "N/A")[:200],
+                                language="text",
+                            )
+
+                    fixes = cluster.get("top_fix_suggestions", [])
+                    if fixes:
+                        st.markdown("**常用修复命令**:")
+                        for fix in fixes[:3]:
+                            st.code(fix.get("command", "N/A"), language="bash")
+
+                    avg_resolve = cluster.get("avg_resolution_time_minutes")
+                    if avg_resolve:
+                        st.markdown(
+                            f"**平均解决时间**: {avg_resolve:.0f} 分钟"
+                        )
+        else:
+            st.info("暂无错误簇数据。分析日志后将自动聚类。")
+
+        st.markdown("---")
+
+        # 完整周报
+        st.subheader("📋 完整周报")
+        with st.expander("展开查看 Markdown 周报", expanded=False):
+            report = generate_weekly_report(cluster_engine)
+            st.code(report, language="markdown")
+
+    except Exception as e:
+        st.error(f"Dashboard 加载失败: {e}")
+        st.info("请先分析一些日志，系统将自动构建错误指纹和聚类。")
+
+    # 页脚后直接结束
+    st.markdown("""
+    <div class="footer">
+        LogGazer · Error Fingerprinting & Intelligent Clustering
+    </div>
+    """, unsafe_allow_html=True)
+    st.stop()
+
+
+# ============================================
+# 示例日志（分析页面）
 # ============================================
 SAMPLE_LOGS = {
     "npm 依赖冲突": """npm ERR! code ERESOLVE
