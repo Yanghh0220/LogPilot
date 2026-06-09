@@ -1,4 +1,4 @@
-# LogPilot 依赖包列表
+# LogGazer 依赖包列表
 # 安装命令：pip install -r requirements.txt
 
 # ---- 运行时依赖 ----

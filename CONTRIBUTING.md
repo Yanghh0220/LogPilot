@@ -1,6 +1,6 @@
 # 贡献指南
 
-感谢你对 LogPilot 的关注！以下是参与贡献的流程。
+感谢你对 LogGazer 的关注！以下是参与贡献的流程。
 
 ## 本地运行项目
 
@@ -8,8 +8,8 @@
 
 ```bash
 # 先在 GitHub 上 Fork 本仓库，然后克隆你的 Fork
-git clone https://github.com/你的用户名/LogPilot.git
-cd LogPilot
+git clone https://github.com/你的用户名/LogGazer.git
+cd LogGazer
 ```
 
 ### 2. 创建虚拟环境
@@ -128,4 +128,4 @@ git push origin feat/你的功能名
 
 ## 有问题？
 
-如有任何问题，欢迎 [提 Issue](https://github.com/Yanghh0220/LogPilot/issues)。
+如有任何问题，欢迎 [提 Issue](https://github.com/Yanghh0220/LogGazer/issues)。

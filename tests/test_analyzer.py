@@ -1,5 +1,5 @@
 """
-LogPilot 核心逻辑单元测试
+LogGazer 核心逻辑单元测试
 
 运行方式：
     pytest tests/ -v

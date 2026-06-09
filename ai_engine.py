@@ -38,7 +38,7 @@ from config import (
 #   - 可以统一格式（时间、级别、消息）
 #   - 上线后可以关闭或重定向到文件
 
-logger = logging.getLogger("LogPilot")
+logger = logging.getLogger("LogGazer")
 logger.setLevel(logging.INFO)
 
 # 如果还没有处理器，添加一个控制台输出
@@ -461,5 +461,5 @@ def call_ai(system_prompt: str, user_prompt: str) -> str:
             "1. 刷新页面后重试\n"
             "2. 检查网络连接\n"
             "3. 如果问题持续，请前往 [GitHub Issues]"
-            "(https://github.com/your-repo/logpilot/issues) 反馈"
+            "(https://github.com/your-repo/loggazer/issues) 反馈"
         )

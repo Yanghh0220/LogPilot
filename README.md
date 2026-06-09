@@ -1,33 +1,33 @@
 <div align="center">
 
-# 🛩️ LogPilot
+# 🛩️ LogGazer
 
 **AI 驱动的 CI/CD 日志分析助手 —— 从报错到修复，60 秒搞定**
 
 把构建失败日志扔给我，我帮你翻译成人话，直接给你修复命令。
 
-[![🚀 在线体验](https://img.shields.io/badge/🚀_在线体验_Click_Me-FF4B4B?style=for-the-badge&logo=streamlit&logoColor=white)](https://logpilot-v-1-0.streamlit.app/)
+[![🚀 在线体验](https://img.shields.io/badge/🚀_在线体验_Click_Me-FF4B4B?style=for-the-badge&logo=streamlit&logoColor=white)](https://loggazer-v-1-0.streamlit.app/)
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.37-FF4B4B?logo=streamlit&logoColor=white)](https://streamlit.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
 [![Tests](https://img.shields.io/badge/Tests-Pytest-yellow?logo=pytest&logoColor=white)](https://pytest.org/)
 [![DeepSeek](https://img.shields.io/badge/AI-DeepSeek-6366F1?logo=google&logoColor=white)](https://platform.deepseek.com/)
-[![CI](https://github.com/Yanghh0220/LogPilot/actions/workflows/ci.yml/badge.svg)](https://github.com/Yanghh0220/LogPilot/actions/workflows/ci.yml)
+[![CI](https://github.com/Yanghh0220/LogGazer/actions/workflows/ci.yml/badge.svg)](https://github.com/Yanghh0220/LogGazer/actions/workflows/ci.yml)
 
-[📖 快速开始](#-快速开始) · [✨ 功能特性](#-功能特性) · [🗺️ Roadmap](#%EF%B8%8F-roadmap) · [🐛 报告问题](https://github.com/Yanghh0220/LogPilot/issues)
+[📖 快速开始](#-快速开始) · [✨ 功能特性](#-功能特性) · [🗺️ Roadmap](#%EF%B8%8F-roadmap) · [🐛 报告问题](https://github.com/Yanghh0220/LogGazer/issues)
 
 </div>
 
 ---
 
-## 🤔 LogPilot 解决什么问题？
+## 🤔 LogGazer 解决什么问题？
 
 每次 CI/CD 流水线挂了，你面对的是这样的场景：
 
 > 几百行日志，翻了 20 分钟，发现只是一个 npm 依赖版本冲突……
 
-| | 手动排查 | ChatGPT 直接问 | **LogPilot** |
+| | 手动排查 | ChatGPT 直接问 | **LogGazer** |
 |--|:--------:|:--------------:|:------------:|
 | 耗时 | 15-30 分钟 | 3-5 分钟 | **< 1 分钟** |
 | 需要自己找错误行？ | ✅ | ✅ | ❌ 自动提取 |
@@ -41,7 +41,7 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                        LogPilot 数据流架构                           │
+│                        LogGazer 数据流架构                           │
 └─────────────────────────────────────────────────────────────────────┘
 
   用户粘贴日志         log_parser.py          prompt.py
@@ -183,8 +183,8 @@
 
 ```bash
 # 1. 克隆项目
-git clone https://github.com/Yanghh0220/LogPilot.git
-cd LogPilot
+git clone https://github.com/Yanghh0220/LogGazer.git
+cd LogGazer
 
 # 2. 创建虚拟环境（为什么？防止依赖污染系统 Python）
 python -m venv venv
@@ -236,7 +236,7 @@ pytest tests/test_log_parser.py -v
 ## 📁 项目结构
 
 ```
-LogPilot/
+LogGazer/
 ├── app.py                  # 🎨 Streamlit 前端主入口
 ├── ai_engine.py            # 🤖 AI 调用引擎（重试机制 + 异常分类 + API 调用）
 ├── analyzer.py             # 🧠 日志分析（平台识别 + 错误提取 + 统计）

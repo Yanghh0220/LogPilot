@@ -1,4 +1,4 @@
-# LogPilot - AI CI/CD 日志分析助手
+# LogGazer - AI CI/CD 日志分析助手
 # 主程序入口
 
 import streamlit as st
@@ -8,7 +8,7 @@ from analyzer import analyze_log
 # 页面配置
 # ============================================
 st.set_page_config(
-    page_title="LogPilot",
+    page_title="LogGazer",
     page_icon="📋",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -29,7 +29,7 @@ st.markdown(f"<style>{css_file.read_text(encoding='utf-8')}</style>", unsafe_all
 with st.sidebar:
     st.markdown("""
     <div style="padding: 8px 0 4px;">
-        <div style="font-size: 1.2rem; font-weight: 700; color: #1a1a1a;">📋 LogPilot</div>
+        <div style="font-size: 1.2rem; font-weight: 700; color: #1a1a1a;">📋 LogGazer</div>
         <div style="font-size: 0.78rem; color: #a3a3a3; margin-top: 2px;">v1.0.0</div>
     </div>
     """, unsafe_allow_html=True)
@@ -86,7 +86,7 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("""
     <div style="font-size: 0.75rem; color: #a3a3a3;">
-        Made with care by LogPilot
+        Made with care by LogGazer
     </div>
     """, unsafe_allow_html=True)
 
@@ -132,7 +132,7 @@ tests/test_auth.py:15: AssertionError
 # ============================================
 st.markdown("""
 <div class="page-header">
-    <div class="page-title">📋 LogPilot</div>
+    <div class="page-title">📋 LogGazer</div>
     <div class="page-desc">粘贴构建失败日志，快速定位问题并获取修复建议</div>
 </div>
 """, unsafe_allow_html=True)
@@ -299,7 +299,7 @@ if analyze_clicked:
 # ============================================
 st.markdown("""
 <div class="footer">
-    LogPilot · Powered by DeepSeek
+    LogGazer · Powered by DeepSeek
 </div>
 """, unsafe_allow_html=True)
 
