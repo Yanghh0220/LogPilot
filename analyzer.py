@@ -1,13 +1,19 @@
-# analyzer.py - AI 分析引擎
+# analyzer.py - AI 分析引擎（结构化生成版）
 #
 # 职责：调用 DeepSeek API，处理所有异常，返回结构化结果
-# 设计原则：对外只暴露两个函数
-#   - call_ai(prompt)  → 底层 AI 调用，返回字符串
-#   - analyze_log(log) → 完整分析流程，返回结构化字典
+# 设计原则：对外只暴露一个函数
+#   - analyze_log(log) → 完整分析流程，返回 AnalysisResult 实例
+#
+# 与旧版的区别：
+# - 移除了 json.loads() + Markdown 围栏剥离的 hack
+# - 使用 call_ai_structured() 实现 Instructor 结构化生成
+# - 返回值从 dict 升级为 Pydantic BaseModel 实例
+# - 保留 call_ai() 作为 legacy 降级路径
 
 import json
 import time
 import functools
+import logging
 from typing import Callable, Any
 
 from openai import (
@@ -20,7 +26,12 @@ from openai import (
 from openai import BadRequestError
 from dotenv import load_dotenv
 
-from prompt import SYSTEM_PROMPT, build_analysis_prompt, build_rag_augmented_prompt
+from prompt import (
+    SYSTEM_PROMPT,
+    build_analysis_prompt,
+    build_rag_augmented_prompt,
+    build_system_prompt,
+)
 from log_parser import parse_log, get_error_stats
 from models import AnalysisResult
 from config import (
@@ -39,7 +50,10 @@ from config import (
 # 加载 .env 文件中的环境变量
 load_dotenv()
 
+logger = logging.getLogger(__name__)
+
 # 创建 OpenAI 兼容客户端（DeepSeek 兼容 OpenAI 接口）
+# 用于 legacy 路径的直接 API 调用
 _client = OpenAI(
     base_url=DEEPSEEK_BASE_URL,
     api_key=DEEPSEEK_API_KEY,
@@ -49,17 +63,9 @@ _client = OpenAI(
 # ============================================================
 #  语义缓存（延迟初始化单例）
 # ============================================================
-# 为什么延迟初始化？
-# - 避免模块加载时就触发 sentence-transformers / Qdrant 初始化
-# - 如果初始化失败，_cache 为 None，主流程不受影响
 
 def _get_cache():
-    """
-    获取或初始化 SemanticCache 单例
-
-    返回:
-        SemanticCache 实例，若初始化失败则返回 None
-    """
+    """获取或初始化 SemanticCache 单例"""
     if not CACHE_ENABLED:
         return None
 
@@ -73,14 +79,12 @@ def _get_cache():
             ttl_hours=CACHE_TTL_HOURS,
         )
     except Exception as e:
-        import logging
         logging.getLogger(__name__).warning(
             "语义缓存初始化失败，将直接调用 AI: %s", e
         )
         return None
 
 
-# 模块级缓存实例（首次使用时初始化）
 _cache_instance = None
 _cache_initialized = False
 
@@ -94,10 +98,16 @@ def _get_or_create_cache():
     return _cache_instance
 
 
+def _reset_cache():
+    """重置缓存单例（用于测试）"""
+    global _cache_instance, _cache_initialized
+    _cache_instance = None
+    _cache_initialized = False
+
+
 # ============================================================
 #  自定义异常类
 # ============================================================
-# 为什么要自定义？把不同错误类型分开，上层可以针对性处理
 
 class AuthError(Exception):
     """认证失败 — API Key 无效或已过期"""
@@ -117,24 +127,9 @@ class QuotaError(Exception):
 # ============================================================
 #  重试装饰器（指数退避）
 # ============================================================
-# 为什么需要重试？网络不稳定时，一次失败不代表永远失败
-# 指数退避：第1次等1秒，第2次等2秒，第3次等4秒
-# 只对网络问题重试，认证/余额问题不重试（重试也没用）
 
 def _retry(max_retries: int = 3) -> Callable:
-    """
-    带指数退避的重试装饰器
-
-    只对以下异常重试：
-    - APIConnectionError（连接失败）
-    - APITimeoutError（请求超时）
-
-    以下异常直接抛出，不重试：
-    - AuthError（认证失败）
-    - RateLimitError（频率超限）
-    - QuotaError（余额不足）
-    """
-
+    """带指数退避的重试装饰器（仅对网络问题重试）"""
     def decorator(func: Callable) -> Callable:
         @functools.wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -144,20 +139,16 @@ def _retry(max_retries: int = 3) -> Callable:
                 try:
                     return func(*args, **kwargs)
                 except (AuthError, RateLimitError, QuotaError):
-                    # 认证/频率/余额问题，重试没用，直接抛出
                     raise
                 except (APIConnectionError, APITimeoutError) as e:
-                    # 网络问题，记录异常并重试
                     last_exception = e
                     if attempt < max_retries:
-                        wait_time = 2 ** attempt  # 1s, 2s, 4s
+                        wait_time = 2 ** attempt
                         time.sleep(wait_time)
                         continue
                 except Exception:
-                    # 其他未知异常，直接抛出不重试
                     raise
 
-            # 所有重试都失败了，抛出最后一次的异常
             raise last_exception
 
         return wrapper
@@ -167,19 +158,9 @@ def _retry(max_retries: int = 3) -> Callable:
 # ============================================================
 #  HTTP 错误解析
 # ============================================================
-# 把 OpenAI SDK 的 HTTP 错误转换为我们自定义的异常类型
 
 def _parse_http_error(status_code: int, message: str) -> Exception:
-    """
-    根据 HTTP 状态码返回对应的自定义异常
-
-    参数:
-        status_code: HTTP 状态码
-        message: 错误描述信息
-
-    返回:
-        对应的自定义异常实例
-    """
+    """根据 HTTP 状态码返回对应的自定义异常"""
     if status_code == 401:
         return AuthError(f"认证失败（401）：API Key 无效或已过期。{message}")
     elif status_code == 429:
@@ -193,42 +174,23 @@ def _parse_http_error(status_code: int, message: str) -> Exception:
 
 
 # ============================================================
-#  核心 AI 调用函数（对外暴露）
+#  Legacy AI 调用（字符串返回，用于降级路径）
 # ============================================================
 
 @_retry(max_retries=3)
 def call_ai(prompt: str) -> str:
     """
-    调用 DeepSeek API，发送提示词并返回 AI 的回复
+    Legacy AI 调用：发送提示词，返回原始字符串
 
-    这是唯一的 AI 调用入口，所有异常都在这里统一处理。
-    成功时返回 AI 的原始文本回复。
-    失败时捕获所有异常，返回 Markdown 格式的友好错误提示（以 ⚠️ 开头）。
-
-    参数:
-        prompt: 用户提示词
-
-    返回:
-        成功 → AI 的原始文本回复
-        失败 → Markdown 格式的错误提示（以 "⚠️" 开头）
+    保留作为降级路径，当 Instructor 不可用时使用。
     """
-    # 检查 API Key 是否配置
     if not DEEPSEEK_API_KEY:
         return (
             "⚠️ **API Key 未配置**\n\n"
-            "**本地开发：** 在项目根目录的 `.env` 文件中填入你的 DeepSeek API Key：\n\n"
-            "```\n"
-            "DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx\n"
-            "```\n\n"
-            "**Streamlit Cloud：** 在 App 设置 → Secrets 中添加：\n\n"
-            "```toml\n"
-            "API_KEY = \"sk-xxxxxxxxxxxxxxxxxxxxxxxx\"\n"
-            "```\n\n"
-            "👉 获取地址：https://platform.deepseek.com/"
+            "请在 `.env` 文件中配置 `DEEPSEEK_API_KEY`"
         )
 
     try:
-        # 调用 DeepSeek API
         response = _client.chat.completions.create(
             model=DEEPSEEK_MODEL,
             messages=[
@@ -238,7 +200,6 @@ def call_ai(prompt: str) -> str:
             temperature=DEEPSEEK_TEMPERATURE,
         )
 
-        # 提取 AI 回复内容
         result_text: str = response.choices[0].message.content or ""
 
         if not result_text.strip():
@@ -250,26 +211,21 @@ def call_ai(prompt: str) -> str:
         return result_text
 
     except AuthenticationError as e:
-        # OpenAI SDK 抛出的认证错误
         parsed = _parse_http_error(401, str(e))
         raise parsed
 
     except OpenAIRateLimitError as e:
-        # OpenAI SDK 抛出的频率限制错误
         parsed = _parse_http_error(429, str(e))
         raise parsed
 
     except BadRequestError as e:
-        # 请求参数错误（如模型名称不存在）
         parsed = _parse_http_error(400, str(e))
         raise parsed
 
     except (APIConnectionError, APITimeoutError):
-        # 网络问题，让装饰器决定是否重试
         raise
 
     except Exception as e:
-        # 其他所有异常，返回友好提示
         return (
             "⚠️ **AI 调用失败**\n\n"
             f"错误信息：`{type(e).__name__}: {str(e)[:200]}`\n\n"
@@ -286,31 +242,21 @@ def call_ai(prompt: str) -> str:
 
 def analyze_log(log_text: str) -> AnalysisResult:
     """
-    完整的日志分析流程：预处理 → 缓存检索 → 构建提示词 → 调用 AI → 解析结果
+    完整的日志分析流程：预处理 → 缓存检索 → 构建提示词 → 结构化生成 → 返回结果
 
-    这是 app.py 调用的主入口函数。
-
-    缓存策略（透明中间件，不影响主流程）：
-    1. 预处理后生成日志指纹
-    2. 查询语义缓存
-       - 相似度 >= 0.92：直接返回缓存结果（0 API 调用）
-       - 相似度 0.80~0.92：注入 RAG 上下文增强分析
-       - 相似度 < 0.80 或缓存不可用：走全新 AI 分析
-    3. AI 分析完成后写入缓存
+    使用 Instructor 结构化生成：
+    - AI 输出被强制约束为 AnalysisResult Schema
+    - 自动处理 JSON 提取、Pydantic 校验、失败重试
+    - 所有重试耗尽后走降级路径（legacy 字符串解析）
 
     参数:
         log_text: 用户粘贴的构建日志原文
 
     返回:
-        AnalysisResult 字典，包含:
-        - error_summary: 错误摘要
-        - error_detail: 关键错误信息
-        - reason: 原因分析
-        - fix_suggestions: 修复建议列表
-        - debug_commands: 排查命令列表
+        AnalysisResult 实例（Pydantic BaseModel，支持 dict-style 和 attribute 访问）
 
     异常:
-        ValueError: 输入为空或 AI 返回的 JSON 无法解析
+        ValueError: 输入为空
     """
     # ---- 1. 输入验证 ----
     if not log_text or not log_text.strip():
@@ -334,17 +280,16 @@ def analyze_log(log_text: str) -> AnalysisResult:
 
             if cached_result is not None:
                 # 高相似度命中，直接返回缓存结果
+                # 确保返回的是 AnalysisResult 实例（可能从旧缓存中反序列化为 dict）
+                if isinstance(cached_result, dict):
+                    cached_result = AnalysisResult.model_validate(cached_result)
                 return cached_result
 
             # 未命中高相似度，尝试获取 RAG 上下文
             rag_context = cache.get_rag_context(fingerprint)
 
         except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning(
-                "缓存层异常，降级到直接分析: %s", e
-            )
-            # 缓存故障不影响主流程
+            logger.warning("缓存层异常，降级到直接分析: %s", e)
             rag_context = ""
 
     # ---- 4. 构建提示词 ----
@@ -359,14 +304,58 @@ def analyze_log(log_text: str) -> AnalysisResult:
     if rag_context:
         user_prompt = build_rag_augmented_prompt(rag_context, user_prompt)
 
-    # ---- 5. 调用 AI ----
-    result_text: str = call_ai(user_prompt)
+    # ---- 5. 构建 Schema 自省的 System Prompt ----
+    system_prompt = build_system_prompt(AnalysisResult.model_json_schema())
 
-    # 如果 call_ai 返回了错误提示（以 ⚠️ 开头），说明调用失败
+    # ---- 6. 调用结构化生成 ----
+    try:
+        from ai_engine import call_ai_structured
+        result = call_ai_structured(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            max_retries=3,
+        )
+    except ImportError:
+        # ai_engine 不可用（如 instructor 未安装），走 legacy 路径
+        logger.warning("ai_engine 不可用，走 legacy 路径")
+        result = _legacy_analyze(user_prompt)
+
+    # ---- 7. 确保返回值是 AnalysisResult 实例 ----
+    if isinstance(result, dict):
+        try:
+            result = AnalysisResult.model_validate(result)
+        except Exception:
+            # 无法转换，使用 best_effort 解析
+            from ai_engine import _best_effort_parse_to_model
+            result = _best_effort_parse_to_model(json.dumps(result, ensure_ascii=False), AnalysisResult)
+
+    # ---- 8. 写入缓存（透明层，失败不影响返回） ----
+    if cache is not None and fingerprint is not None:
+        try:
+            cache.set(fingerprint, result, {
+                "platform": parsed["platform"],
+                "error_lines": parsed["error_lines"],
+            })
+        except Exception as e:
+            logger.warning("缓存写入失败: %s", e)
+
+    return result
+
+
+def _legacy_analyze(user_prompt: str) -> AnalysisResult:
+    """
+    Legacy 分析路径：字符串调用 + JSON 解析
+
+    当 Instructor 完全不可用时的降级方案。
+    保留旧版的 Markdown 围栏剥离逻辑，但用 Pydantic 做最终校验。
+    """
+    result_text = call_ai(user_prompt)
+
     if result_text.startswith("⚠️"):
-        raise ConnectionError(result_text)
+        from ai_engine import _create_fallback_model
+        return _create_fallback_model(AnalysisResult, result_text)
 
-    # ---- 6. 解析 JSON ----
+    # 剥离 Markdown 围栏
     cleaned: str = result_text.strip()
     if cleaned.startswith("```json"):
         cleaned = cleaned[7:]
@@ -377,24 +366,9 @@ def analyze_log(log_text: str) -> AnalysisResult:
     cleaned = cleaned.strip()
 
     try:
-        result: AnalysisResult = json.loads(cleaned)
-    except json.JSONDecodeError:
-        raise ValueError(
-            f"AI 返回的内容无法解析为 JSON，请重试。\n"
-            f"原始内容: {cleaned[:300]}..."
-        )
-
-    # ---- 7. 写入缓存（透明层，失败不影响返回） ----
-    if cache is not None and fingerprint is not None:
-        try:
-            cache.set(fingerprint, result, {
-                "platform": parsed["platform"],
-                "error_lines": parsed["error_lines"],
-            })
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning(
-                "缓存写入失败: %s", e
-            )
-
-    return result
+        data = json.loads(cleaned)
+        return AnalysisResult.model_validate(data)
+    except (json.JSONDecodeError, Exception) as e:
+        logger.warning("Legacy JSON 解析失败: %s", e)
+        from ai_engine import _best_effort_parse_to_model
+        return _best_effort_parse_to_model(cleaned, AnalysisResult)

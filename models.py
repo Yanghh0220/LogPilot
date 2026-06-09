@@ -1,37 +1,249 @@
-# types.py - 类型定义，让代码有类型提示
+# models.py - 结构化数据模型（Pydantic v2）
 #
-# 为什么需要这个文件？
-# 1. Python 的 dict 没有"结构"，IDE 不知道有哪些 key
-# 2. 用 TypedDict 定义后，IDE 能自动补全、检查拼写错误
-# 3. 方便团队协作，一看类型就知道数据长什么样
+# 职责：
+# 1. 定义 AI 分析结果的强类型 Schema（运行时校验 + IDE 补全）
+# 2. 通过 Field(description=...) 注入 LLM System Prompt 作为 Schema 约束
+# 3. 通过 field_validator / model_validator 执行字段级安全校验
+# 4. 导出 JSON Schema 供 API 文档或前端表单生成
 #
-# TypedDict vs dataclass vs Pydantic？
-# - TypedDict：最轻量，只是类型标注，运行时还是普通 dict
-# - dataclass：会创建真正的类实例，需要额外转换
-# - Pydantic：功能最强，但对这个小项目来说太重了
-# 我们选 TypedDict，够用且不引入新依赖
+# 从 TypedDict 迁移到 Pydantic v2 的收益：
+# - 运行时校验：AI 输出不符合 Schema 时立即报错，不会悄悄传入下游
+# - JSON Schema 生成：model_json_schema() 自动注入 System Prompt
+# - 错误信息可读：ValidationError 包含字段路径、期望值、实际值
+# - Instructor 兼容：response_model=AnalysisResult 实现模式强制生成
 
-from typing import TypedDict
+from __future__ import annotations
+
+import re
+import shlex
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
-class FixSuggestion(TypedDict):
-    """一条修复建议"""
-    title: str        # 建议标题，如 "使用 --legacy-peer-deps 安装"
-    description: str  # 详细说明
-    command: str      # 可执行的修复命令
+# ============================================================
+#  命令安全校验（静态分析，不执行命令）
+# ============================================================
+
+# 危险命令模式黑名单（正则匹配）
+# 仅做静态语法和模式分析，绝不执行命令（subprocess.run / eval / exec 禁止）
+_DANGEROUS_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"rm\s+(-[a-zA-Z]*\s+)*--no-preserve-root\s+/", re.IGNORECASE),
+    re.compile(r"rm\s+(-[a-zA-Z]*f[a-zA-Z]*|-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*)\s+/", re.IGNORECASE),
+    re.compile(r"rm\s+-rf\s+/", re.IGNORECASE),
+    re.compile(r"mkfs\.\w+\s+/dev/\w+", re.IGNORECASE),
+    re.compile(r"dd\s+if=/dev/(zero|urandom|random)\s+of=/dev/\w+", re.IGNORECASE),
+    re.compile(r"curl\s+[^|]*\|\s*(ba)?sh", re.IGNORECASE),
+    re.compile(r"wget\s+[^|]*\|\s*(ba)?sh", re.IGNORECASE),
+    re.compile(r":\(\)\{.*\}", re.IGNORECASE),  # Fork bomb
+    re.compile(r"chmod\s+-R\s+777\s+/", re.IGNORECASE),
+    re.compile(r">\s*/dev/sd[a-z]", re.IGNORECASE),  # 覆写磁盘设备
+    re.compile(r"mv\s+/\s+", re.IGNORECASE),  # mv / ...
+]
 
 
-class AnalysisResult(TypedDict):
+def validate_command_safety(command: str) -> str:
+    """
+    命令级安全校验：语法解析 + 黑名单 + 语义分析
+
+    校验流程：
+    1. shlex.split() 语法解析（捕获未闭合引号等语法错误）
+    2. 危险模式黑名单正则匹配
+
+    参数:
+        command: 待校验的 bash 命令字符串
+
+    返回:
+        原始命令字符串（校验通过时）
+
+    异常:
+        ValueError: 语法错误或匹配危险模式时
+    """
+    if not command or not command.strip():
+        raise ValueError("命令不能为空")
+
+    # 1. shlex 语法校验
+    try:
+        tokens = shlex.split(command)
+    except ValueError as e:
+        raise ValueError(f"无效的 shell 语法: {e}")
+
+    if not tokens:
+        raise ValueError("命令解析后为空")
+
+    # 2. 危险模式黑名单
+    for pattern in _DANGEROUS_PATTERNS:
+        if pattern.search(command):
+            raise ValueError(
+                f"检测到危险命令模式: {command[:60]}..."
+            )
+
+    return command
+
+
+# ============================================================
+#  Pydantic 数据模型
+# ============================================================
+
+class RootCause(BaseModel):
+    """单个根因分析"""
+
+    description: str = Field(
+        ...,
+        max_length=200,
+        description="根因描述，具体且可操作",
+    )
+    probability: int = Field(
+        ...,
+        ge=0,
+        le=100,
+        description="可能性百分比（0-100）",
+    )
+
+
+class FixSuggestion(BaseModel):
+    """单条修复建议"""
+
+    title: str = Field(
+        ...,
+        max_length=60,
+        description="修复方案标题",
+    )
+    description: str = Field(
+        ...,
+        max_length=400,
+        description="详细解释和上下文",
+    )
+    command: str = Field(
+        ...,
+        description="可执行的 bash 命令，将被安全校验",
+    )
+    safety_level: Literal["safe", "review", "dangerous"] = Field(
+        default="safe",
+        description="命令安全等级",
+    )
+
+    @field_validator("command")
+    @classmethod
+    def validate_command(cls, v: str) -> str:
+        """命令级安全校验：语法解析 + 黑名单"""
+        return validate_command_safety(v)
+
+    # ---- 向后兼容：支持 dict-style 访问 ----
+    # app.py 和 cache_engine.py 使用 result.get("key") 和 s.get("key")
+    # 提供 __getitem__ / get 方法桥接，避免一次性重写所有访问点
+
+    def __getitem__(self, key: str) -> Any:
+        return getattr(self, key)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return getattr(self, key, default)
+
+
+class AnalysisResult(BaseModel):
     """
     AI 分析日志后的结构化返回结果
 
-    这就是 analyze_log() 返回值的"形状"
+    这就是 analyze_log() 返回值的类型。
+    通过 model_json_schema() 可导出 JSON Schema 用于 API 文档或前端表单。
     """
-    error_summary: str                 # 一句话概括错误
-    error_detail: str                  # 关键错误信息原文（英文）
-    reason: str                        # 用中文解释报错原因
-    fix_suggestions: list[FixSuggestion]  # Top 3 修复建议
-    debug_commands: list[str]          # 排查命令列表
+
+    error_summary: str = Field(
+        ...,
+        max_length=50,
+        description="一句话错误摘要，<=50字",
+    )
+    error_detail: str = Field(
+        ...,
+        description="关键错误信息原文（保留英文）",
+    )
+    root_causes: list[RootCause] = Field(
+        ...,
+        min_length=1,
+        max_length=5,
+        description="2-5个根因分析，概率之和必须=100",
+    )
+    fix_suggestions: list[FixSuggestion] = Field(
+        ...,
+        max_length=3,
+        description="Top 3 修复建议，带可执行命令",
+    )
+    debug_commands: list[str] = Field(
+        ...,
+        max_length=5,
+        description="排查命令列表（有效 bash 命令）",
+    )
+    severity: Literal["low", "medium", "high", "critical"] = Field(
+        ...,
+        description="严重程度：low/medium/high/critical",
+    )
+    prevention: list[str] = Field(
+        default_factory=list,
+        max_length=3,
+        description="预防建议列表",
+    )
+    security_warning: str = Field(
+        default="",
+        description="当安全校验失败时附加的警告信息",
+    )
+
+    # 兼容旧字段名 reason → root_causes
+    # app.py 中 result.get("reason") 仍需工作
+    _REASON_ALIAS = True
+
+    @model_validator(mode="after")
+    def check_probabilities_sum(self) -> "AnalysisResult":
+        """根因概率之和必须严格等于 100"""
+        if self.root_causes:
+            total = sum(c.probability for c in self.root_causes)
+            if total != 100:
+                raise ValueError(
+                    f"根因概率之和必须等于 100，当前为 {total}"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def check_debug_commands_valid(self) -> "AnalysisResult":
+        """排查命令必须是有效 shell 语法"""
+        for cmd in self.debug_commands:
+            try:
+                shlex.split(cmd)
+            except ValueError as e:
+                raise ValueError(
+                    f"无效的排查命令: {cmd[:50]}... 错误: {e}"
+                )
+        return self
+
+    # ---- 向后兼容：支持 dict-style 访问 ----
+    # app.py 使用 result.get("error_summary", "无") 等方式访问
+    # 提供 __getitem__ / get 方法桥接
+
+    def __getitem__(self, key: str) -> Any:
+        # 兼容旧字段名 "reason" → root_causes 的摘要文本
+        if key == "reason":
+            causes = self.root_causes
+            if causes:
+                return "；".join(
+                    f"{c.description}（{c.probability}%）"
+                    for c in causes
+                )
+            return ""
+        return getattr(self, key)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        try:
+            return self[key]
+        except (AttributeError, KeyError):
+            return default
+
+
+# ============================================================
+#  保留 ParsedLog 为 TypedDict
+# ============================================================
+# ParsedLog 仅用于 log_parser.py 的内部返回值
+# 不涉及 AI 交互，无需 Pydantic 校验
+
+from typing import TypedDict
 
 
 class ParsedLog(TypedDict):

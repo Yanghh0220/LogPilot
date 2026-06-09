@@ -8,7 +8,7 @@
 # 如何运行？
 # 在项目根目录执行：pytest tests/test_prompt.py -v
 
-from prompt import SYSTEM_PROMPT, build_analysis_prompt, build_rag_augmented_prompt
+from prompt import SYSTEM_PROMPT, build_analysis_prompt, build_rag_augmented_prompt, build_system_prompt
 
 
 # ============================================
@@ -34,13 +34,37 @@ class TestSystemPrompt:
         assert "示例输出" in SYSTEM_PROMPT
 
     def test_contains_probability_constraint(self):
-        """系统提示词包含百分比之和=100%的约束"""
-        assert "100%" in SYSTEM_PROMPT
+        """系统提示词包含百分比之和=100的约束"""
+        assert "100" in SYSTEM_PROMPT
 
     def test_contains_rules(self):
         """系统提示词包含硬性规则"""
         assert "只返回 JSON" in SYSTEM_PROMPT
         assert "severity" in SYSTEM_PROMPT
+
+    def test_build_system_prompt_injects_schema(self):
+        """build_system_prompt() 将 JSON Schema 注入到系统提示词中"""
+        schema = {
+            "type": "object",
+            "properties": {
+                "error_summary": {"type": "string"},
+                "severity": {"type": "string", "enum": ["low", "medium", "high", "critical"]},
+            },
+        }
+        prompt = build_system_prompt(schema)
+        assert "error_summary" in prompt
+        assert "severity" in prompt
+        assert "critical" in prompt
+        # Schema 应该以 JSON 格式注入
+        assert '"type"' in prompt
+
+    def test_build_system_prompt_contains_rules(self):
+        """build_system_prompt() 生成的提示词包含硬性规则"""
+        schema = {"type": "object", "properties": {}}
+        prompt = build_system_prompt(schema)
+        assert "只返回 JSON" in prompt
+        assert "probability" in prompt
+        assert "severity" in prompt
 
 
 # ============================================
@@ -193,7 +217,7 @@ class TestBuildAnalysisPrompt:
         assert "ERROR: failed to solve" in result
         assert "medium" in result
         assert "200" in result
-        assert "100%" in result  # 百分比约束
+        assert "100" in result  # 百分比约束
 
 
 # ============================================

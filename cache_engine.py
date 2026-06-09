@@ -310,8 +310,11 @@ class SemanticCache:
         try:
             from qdrant_client.models import PointStruct
 
-            # 序列化结果
-            serialized = json.dumps(result, ensure_ascii=False)
+            # 序列化结果（兼容 Pydantic BaseModel 和 dict）
+            if hasattr(result, 'model_dump_json'):
+                serialized = result.model_dump_json()
+            else:
+                serialized = json.dumps(result, ensure_ascii=False)
 
             # 生成向量
             error_lines = metadata.get("error_lines", [])
@@ -478,13 +481,33 @@ class SemanticCache:
             return None
 
     def _deserialize_result(self, payload: dict) -> Optional[AnalysisResult]:
-        """从 payload 中反序列化 AnalysisResult"""
+        """从 payload 中反序列化 AnalysisResult
+
+        优先使用 Pydantic model_validate_json() 进行结构化反序列化，
+        确保返回的 AnalysisResult 通过运行时校验。
+        若旧缓存中的 JSON 不符合新 Schema（如缺少 severity 字段），
+        则尽力解析并用默认值填充缺失字段。
+        """
         try:
             result_json = payload.get("result_json", "{}")
-            return json.loads(result_json)
+            # 优先使用 Pydantic 结构化反序列化
+            try:
+                return AnalysisResult.model_validate_json(result_json)
+            except Exception:
+                # 旧缓存可能不符合新 Schema，尽力解析
+                data = json.loads(result_json)
+                return AnalysisResult.model_validate(data)
         except (json.JSONDecodeError, TypeError) as e:
             logger.warning("缓存结果反序列化失败: %s", e)
             return None
+        except Exception as e:
+            logger.warning("缓存结果 Pydantic 校验失败: %s", e)
+            # 最后尝试：返回 dict（由 analyzer.py 层转换）
+            try:
+                result_json = payload.get("result_json", "{}")
+                return json.loads(result_json)
+            except Exception:
+                return None
 
     def _delete_point(self, point_id: int) -> None:
         """删除指定的缓存点"""

@@ -232,6 +232,26 @@ if analyze_clicked:
         </div>
         """, unsafe_allow_html=True)
 
+        # ---- 安全警告（如果有） ----
+        security_warning = result.get("security_warning", "")
+        if security_warning:
+            st.warning(f"⚠️ 安全提示：{security_warning}")
+
+        # ---- 严重程度标签 ----
+        severity = result.get("severity", "medium")
+        severity_colors = {
+            "critical": "🔴",
+            "high": "🟠",
+            "medium": "🟡",
+            "low": "🟢",
+        }
+        severity_icon = severity_colors.get(severity, "⚪")
+        st.markdown(f"""
+        <div class="result-card result-card-left" style="border-left-color: #6b7280;">
+            <div class="card-title">严重程度 {severity_icon} {severity.upper()}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
         # ---- 错误摘要 ----
         st.markdown(f"""
         <div class="result-card result-card-left red">
@@ -249,13 +269,31 @@ if analyze_clicked:
         """, unsafe_allow_html=True)
         st.code(error_detail, language="bash")
 
-        # ---- 原因分析 ----
-        st.markdown(f"""
-        <div class="result-card result-card-left blue">
-            <div class="card-title">原因分析</div>
-            <div class="card-body">{result.get("reason", "无")}</div>
-        </div>
-        """, unsafe_allow_html=True)
+        # ---- 根因分析（结构化展示） ----
+        root_causes = result.get("root_causes", [])
+        if root_causes:
+            causes_html = ""
+            for i, cause in enumerate(root_causes, 1):
+                desc = cause.get("description", "") if isinstance(cause, dict) else getattr(cause, "description", "")
+                prob = cause.get("probability", 0) if isinstance(cause, dict) else getattr(cause, "probability", 0)
+                bar_width = max(prob, 2)  # 最小宽度 2% 保证可见
+                causes_html += f"""
+                <div style="margin-bottom: 8px;">
+                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 2px;">
+                        <span style="font-weight: 600; min-width: 36px;">{prob}%</span>
+                        <span style="font-size: 0.9rem;">{desc}</span>
+                    </div>
+                    <div style="background: #e5e7eb; border-radius: 4px; height: 6px; overflow: hidden;">
+                        <div style="background: #3b82f6; height: 100%; width: {bar_width}%; border-radius: 4px;"></div>
+                    </div>
+                </div>"""
+
+            st.markdown(f"""
+            <div class="result-card result-card-left blue">
+                <div class="card-title">根因分析</div>
+                <div class="card-body">{causes_html}</div>
+            </div>
+            """, unsafe_allow_html=True)
 
         # ---- 修复建议 ----
         suggestions = result.get("fix_suggestions", [])
@@ -264,9 +302,18 @@ if analyze_clicked:
             for i, s in enumerate(suggestions, 1):
                 title = s.get("title", "无标题")
                 desc = s.get("description", "")
+                safety = s.get("safety_level", "safe")
+                safety_badge = {
+                    "safe": "🟢 安全",
+                    "review": "🟡 需审核",
+                    "dangerous": "🔴 危险",
+                }.get(safety, "")
                 items_html += f"""
                 <div class="fix-item">
-                    <div class="fix-title"><span class="fix-num">{i}</span>{title}</div>
+                    <div class="fix-title">
+                        <span class="fix-num">{i}</span>{title}
+                        <span style="font-size: 0.75rem; color: #6b7280; margin-left: 8px;">{safety_badge}</span>
+                    </div>
                     <div class="fix-desc">{desc}</div>
                 </div>"""
 
@@ -293,6 +340,19 @@ if analyze_clicked:
             """, unsafe_allow_html=True)
             for cmd in debug_cmds:
                 st.code(cmd, language="bash")
+
+        # ---- 预防建议 ----
+        prevention = result.get("prevention", [])
+        if prevention:
+            prevention_items = ""
+            for tip in prevention:
+                prevention_items += f"<li>{tip}</li>"
+            st.markdown(f"""
+            <div class="result-card result-card-left" style="border-left-color: #8b5cf6;">
+                <div class="card-title">预防建议</div>
+                <div class="card-body"><ul style="margin: 0; padding-left: 1.2rem;">{prevention_items}</ul></div>
+            </div>
+            """, unsafe_allow_html=True)
 
 # ============================================
 # 页脚

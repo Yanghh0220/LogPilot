@@ -31,3 +31,44 @@ def _mock_openai_client():
     mock_client = MagicMock()
     with patch("openai.OpenAI", return_value=mock_client):
         yield mock_client
+
+
+# ============================================================
+#  Mock 数据：符合新 Pydantic Schema 的标准 AI 响应
+# ============================================================
+
+MOCK_AI_RESPONSE_DICT = {
+    "error_summary": "npm 依赖解析冲突",
+    "error_detail": "npm ERR! ERESOLVE could not resolve",
+    "root_causes": [
+        {"description": "react 版本不兼容", "probability": 90},
+        {"description": "package-lock.json 过期", "probability": 10},
+    ],
+    "fix_suggestions": [
+        {
+            "title": "使用 --legacy-peer-deps",
+            "description": "跳过 peer dependency 检查",
+            "command": "npm install --legacy-peer-deps",
+            "safety_level": "safe",
+        },
+        {
+            "title": "升级 testing-library",
+            "description": "使用兼容 react 18 的版本",
+            "command": "npm install @testing-library/react@latest",
+            "safety_level": "safe",
+        },
+        {
+            "title": "降级 react",
+            "description": "使用 react 17",
+            "command": "npm install react@17.0.2",
+            "safety_level": "safe",
+        },
+    ],
+    "debug_commands": ["npm ls react", "npm why react"],
+    "severity": "medium",
+    "prevention": ["使用更宽松的版本范围"],
+    "security_warning": "",
+}
+
+import json as _json
+MOCK_AI_RESPONSE = _json.dumps(MOCK_AI_RESPONSE_DICT, ensure_ascii=False)
