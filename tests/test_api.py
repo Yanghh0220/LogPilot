@@ -334,12 +334,16 @@ class TestClusters:
     """Cluster insights endpoint tests."""
 
     def test_clusters_returns_data(self, client):
-        """GET /v1/clusters returns cluster data."""
+        """GET /v1/clusters returns paginated cluster data."""
         response = client.get("/v1/clusters")
         assert response.status_code == 200
         data = response.json()
-        assert "clusters" in data
+        # P1-2②: 新分页格式
+        assert "data" in data
         assert "total" in data
+        assert "page" in data
+        assert "page_size" in data
+        assert "has_more" in data
         assert "params" in data
 
     def test_clusters_respects_query_params(self, client):

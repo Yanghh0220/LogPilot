@@ -1,0 +1,137 @@
+{
+  "meta": {
+    "tool": "check_performance.py",
+    "version": "1.0",
+    "timestamp": "2026-06-11T00:35:47",
+    "python_version": "3.11.9 (tags/v3.11.9:de54cf5, Apr  2 2024, 10:12:12) [MSC v.1938 64 bit (AMD64)]",
+    "perf_debug_enabled": true,
+    "measurement_method": "median_of_3_runs_after_warmup"
+  },
+  "scenarios": {
+    "scenario_1_small_file": {
+      "label": "场景1_小文件",
+      "file_size_kb": 1.8,
+      "input_type": "npm error log",
+      "log_parser": {
+        "platform_detection_us": 0.1,
+        "error_extraction_us": 0.1,
+        "truncation_us": 0.3,
+        "parse_total_ms": 0.74,
+        "error_stats_us": 0.4
+      },
+      "fingerprint": {
+        "normalize_us": 1.8,
+        "skeleton_extract_us": 0.4,
+        "minhash_ms": 0.41,
+        "fingerprint_total_ms": 3.4
+      }
+    },
+    "scenario_2_medium_file": {
+      "label": "场景2_中等文件",
+      "file_size_kb": 18.6,
+      "input_type": "pytest output",
+      "log_parser": {
+        "platform_detection_us": 0.1,
+        "error_extraction_ms": 0.0,
+        "truncation_us": 0.1,
+        "parse_total_ms": 4.22
+      },
+      "fingerprint": {
+        "fingerprint_total_ms": 13.59
+      },
+      "cluster": {
+        "assign_cluster_ms": 11.08,
+        "store_analysis_ms": 5.47
+      }
+    },
+    "scenario_3_cache_test": {
+      "label": "场景3_缓存效果",
+      "available": true,
+      "init_ms": 488053.0,
+      "cold_cache": {
+        "get_us": 180.6,
+        "hit": false
+      },
+      "cache_write": {
+        "set_ms": 0.26
+      },
+      "warm_cache": {
+        "get_us": 162.9,
+        "hit": false
+      },
+      "speedup": 1.1
+    },
+    "scenario_4_concurrent": {
+      "label": "场景4_并发处理",
+      "concurrency": 4,
+      "total_ms": 67.63,
+      "per_worker_ms": [
+        {
+          "worker": 0,
+          "ms": 17.62
+        },
+        {
+          "worker": 1,
+          "ms": 15.61
+        },
+        {
+          "worker": 2,
+          "ms": 14.27
+        },
+        {
+          "worker": 3,
+          "ms": 15.74
+        }
+      ],
+      "min_ms": 14.27,
+      "max_ms": 17.62,
+      "avg_ms": 15.81,
+      "throughput_rps": 59.1
+    }
+  },
+  "summary": {
+    "top_bottlenecks": [
+      {
+        "phase": "cluster:assign_cluster",
+        "elapsed_ms": 11.08
+      },
+      {
+        "phase": "cluster:store_analysis",
+        "elapsed_ms": 5.47
+      },
+      {
+        "phase": "fingerprint:fingerprint_total",
+        "elapsed_ms": 3.4
+      },
+      {
+        "phase": "log_parser:parse_total",
+        "elapsed_ms": 0.74
+      },
+      {
+        "phase": "fingerprint:minhash",
+        "elapsed_ms": 0.41
+      },
+      {
+        "phase": "fingerprint:normalize",
+        "elapsed_ms": 0.0018
+      },
+      {
+        "phase": "log_parser:error_stats",
+        "elapsed_ms": 0.0004
+      },
+      {
+        "phase": "fingerprint:skeleton_extract",
+        "elapsed_ms": 0.0004
+      },
+      {
+        "phase": "log_parser:truncation",
+        "elapsed_ms": 0.0003
+      },
+      {
+        "phase": "log_parser:platform_detection",
+        "elapsed_ms": 0.0001
+      }
+    ],
+    "total_scenarios": 4
+  }
+}

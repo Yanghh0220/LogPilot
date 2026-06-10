@@ -72,3 +72,22 @@ MOCK_AI_RESPONSE_DICT = {
 
 import json as _json
 MOCK_AI_RESPONSE = _json.dumps(MOCK_AI_RESPONSE_DICT, ensure_ascii=False)
+
+
+# ============================================================
+#  P0-2 / P1-4①: 每个测试前清除缓存，确保测试隔离
+# ============================================================
+
+@pytest.fixture(autouse=True)
+def _clear_caches_before_each_test():
+    """每个测试前清除所有模块级缓存，确保测试间无污染"""
+    try:
+        from analyzer import clear_content_cache
+        clear_content_cache()
+    except Exception:
+        pass
+    try:
+        from cluster_engine import reset_cluster_engine
+        reset_cluster_engine()
+    except Exception:
+        pass
