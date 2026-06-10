@@ -28,6 +28,7 @@
     "debugging"
   ],
   "activationEvents": [
+    "onStartupFinished",
     "onCommand:loggazer.analyzeTerminalSelection"
   ],
   "main": "./out/extension.js",
@@ -41,6 +42,11 @@
       {
         "command": "loggazer.showAnalysisPanel",
         "title": "LogGazer: Show Analysis Panel",
+        "category": "LogGazer"
+      },
+      {
+        "command": "loggazer.startBackend",
+        "title": "LogGazer: Start Backend",
         "category": "LogGazer"
       }
     ],
@@ -81,6 +87,21 @@
           "type": "boolean",
           "default": false,
           "description": "Show analysis metadata (duration, model used, cost) in the panel."
+        },
+        "loggazer.autoStartBackend": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically start the LogGazer backend when the extension activates if it's not already running."
+        },
+        "loggazer.pythonCommand": {
+          "type": "string",
+          "default": "python",
+          "description": "Python command to use for starting the backend (e.g., 'python', 'python3', or full path to python.exe)."
+        },
+        "loggazer.projectPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the LogPilot project root (folder containing api/main.py). Auto-detected from workspace if empty."
         }
       }
     }

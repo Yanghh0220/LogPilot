@@ -154,6 +154,36 @@ async function analyzeLog(
             type: 'error',
             message,
         });
-        vscode.window.showErrorMessage(`LogGazer: ${message}`);
+
+        // Detect connection errors and offer to start the backend
+        const isConnectionError =
+            message.includes('not running') ||
+            message.includes('Cannot connect') ||
+            message.includes('ECONNREFUSED') ||
+            message.includes('fetch');
+
+        if (isConnectionError) {
+            const action = await vscode.window.showErrorMessage(
+                `LogGazer: Backend is not running.`,
+                'Start Backend',
+                'Cancel'
+            );
+            if (action === 'Start Backend') {
+                await vscode.commands.executeCommand('loggazer.startBackend');
+                // After starting, offer to retry
+                const retry = await vscode.window.showInformationMessage(
+                    'Backend is starting... Would you like to retry the analysis once it\'s ready?',
+                    'Retry',
+                    'Later'
+                );
+                if (retry === 'Retry') {
+                    // Wait a few seconds for the backend to start, then retry
+                    await new Promise(resolve => setTimeout(resolve, 4000));
+                    await analyzeLog(logText, apiUrl, apiKey, maxLogSizeKB, context);
+                }
+            }
+        } else {
+            vscode.window.showErrorMessage(`LogGazer: ${message}`);
+        }
     }
 }

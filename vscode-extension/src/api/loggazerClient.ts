@@ -124,9 +124,10 @@ export class LogGazerClient {
         } catch (err: unknown) {
             if (err instanceof TypeError && err.message.includes('fetch')) {
                 throw new Error(
-                    `Cannot connect to LogGazer backend at ${apiUrl}.\n\n` +
-                    `Please start the backend:\n  python -m api.main\n\n` +
-                    `Or configure a different URL in VS Code settings (loggazer.apiUrl).`
+                    `LogGazer backend is not running at ${apiUrl}.\n\n` +
+                    `Run "LogGazer: Start Backend" from the Command Palette (Ctrl+Shift+P)\n` +
+                    `or click the LogGazer status bar icon to start it automatically.\n\n` +
+                    `To use a remote backend, set loggazer.apiUrl in VS Code settings.`
                 );
             }
             if (err instanceof Error && err.name === 'AbortError') {

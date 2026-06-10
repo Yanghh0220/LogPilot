@@ -7,15 +7,25 @@
 # Backend URL configured via LOGGAZER_API_URL env var (default: http://localhost:8000)
 
 import os
+import sys
+import time
+import subprocess
 import streamlit as st
 import httpx
 
 # Backend API URL (configurable for local/cloud deployment)
 BACKEND_URL = os.getenv("LOGGAZER_API_URL", "http://localhost:8000").rstrip("/")
 
+# Project root (where api/main.py lives)
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # ---- Backend Health State ----
 if "backend_healthy" not in st.session_state:
     st.session_state["backend_healthy"] = None  # None = not checked yet
+if "backend_starting" not in st.session_state:
+    st.session_state["backend_starting"] = False
+if "backend_pid" not in st.session_state:
+    st.session_state["backend_pid"] = None
 
 # ============================================
 # 可观测性初始化（全局单例）
@@ -78,8 +88,73 @@ def _get_observability():
     return _observability
 
 # ============================================
-#  BFF Helpers: Backend health check + API call wrapper
+#  BFF Helpers: Backend auto-start + health check + API call wrapper
 # ============================================
+
+def _get_python_command() -> str:
+    """Detect the best available Python command."""
+    # Try the Python that's running this script first
+    return sys.executable
+
+
+def start_backend_process() -> bool:
+    """
+    Start the LogGazer FastAPI backend as a background subprocess.
+
+    Returns True if the process was started successfully, False otherwise.
+    """
+    if st.session_state.get("backend_starting"):
+        return False  # Already attempting to start
+
+    python_cmd = _get_python_command()
+    backend_script = os.path.join(PROJECT_DIR, "api", "main.py")
+
+    if not os.path.exists(backend_script):
+        st.error(f"未找到后端入口文件: {backend_script}")
+        return False
+
+    st.session_state["backend_starting"] = True
+
+    try:
+        # Launch backend as detached subprocess
+        # On Windows: CREATE_NEW_PROCESS_GROUP to avoid Ctrl+C propagation
+        # On Unix: start_new_session to detach from Streamlit's process group
+        creationflags = 0
+        if sys.platform == "win32":
+            creationflags = subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore
+
+        proc = subprocess.Popen(
+            [python_cmd, "-m", "api.main"],
+            cwd=PROJECT_DIR,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True if sys.platform != "win32" else False,
+            creationflags=creationflags if sys.platform == "win32" else 0,
+        )
+        st.session_state["backend_pid"] = proc.pid
+        return True
+    except Exception as e:
+        st.session_state["backend_starting"] = False
+        st.error(f"启动后端失败: {e}")
+        return False
+
+
+def wait_for_backend(timeout: float = 20.0, interval: float = 1.5) -> bool:
+    """
+    Wait for the backend to become healthy, up to `timeout` seconds.
+
+    Returns True if backend becomes healthy within the timeout.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        health = check_backend_health()
+        if health and health.get("status") in ("healthy", "degraded"):
+            st.session_state["backend_healthy"] = True
+            st.session_state["backend_starting"] = False
+            return True
+        time.sleep(interval)
+    st.session_state["backend_starting"] = False
+    return False
 
 def check_backend_health() -> dict | None:
     """Check if the LogGazer Backend is reachable and healthy."""
@@ -132,8 +207,8 @@ def call_analyze_via_api(log_text: str) -> dict:
     except httpx.ConnectError:
         raise ConnectionError(
             f"无法连接到 LogGazer Backend ({BACKEND_URL})。\n\n"
-            f"请先启动后端服务：\n```bash\npython -m api.main\n```\n"
-            f"或设置 LOGGAZER_API_URL 环境变量指向正确的后端地址。"
+            f"请点击下方的「启动 Backend」按钮，"
+            f"或手动运行: {_get_python_command()} -m api.main"
         )
     except httpx.TimeoutException:
         raise ConnectionError("分析请求超时，请检查网络或后端服务状态后重试。")
@@ -495,18 +570,59 @@ if analyze_clicked:
     if not log_input.strip():
         st.warning("请先粘贴日志内容")
     else:
-        # ---- 后端健康检查（首次使用时） ----
+        # ---- 后端健康检查 + 自动启动 ----
         if st.session_state["backend_healthy"] is None:
             health = check_backend_health()
             st.session_state["backend_healthy"] = health is not None and health.get("status") in ("healthy", "degraded")
 
         if not st.session_state["backend_healthy"]:
+            if not st.session_state.get("backend_starting"):
+                # First attempt: auto-start silently
+                started = start_backend_process()
+                if started:
+                    st.toast("🚀 LogGazer Backend 正在启动...", icon="🚀")
+                    backend_ready = wait_for_backend(timeout=15.0)
+                    if backend_ready:
+                        st.toast("✅ Backend 已就绪", icon="✅")
+                        st.session_state["backend_healthy"] = True
+                        st.rerun()
+                    else:
+                        st.toast("⏳ Backend 启动较慢，请稍候点击「重试」", icon="⏳")
+
+            # Show interactive recovery panel
             st.warning(
-                f"⚠️ **LogGazer Backend 未启动**\n\n"
-                f"无法连接到 `{BACKEND_URL}`。请先启动后端服务：\n\n"
-                f"```bash\npython -m api.main\n```\n\n"
-                f"启动后刷新页面即可。"
+                f"⚠️ **LogGazer Backend 未就绪**\n\n"
+                f"无法连接到 `{BACKEND_URL}`。"
             )
+
+            col_a, col_b, col_c = st.columns([1, 1, 2])
+            with col_a:
+                if st.button("🚀 启动 Backend", type="primary", use_container_width=True):
+                    started = start_backend_process()
+                    if started:
+                        st.toast("正在启动...", icon="🚀")
+                        backend_ready = wait_for_backend(timeout=20.0)
+                        if backend_ready:
+                            st.session_state["backend_healthy"] = True
+                            st.toast("✅ Backend 已就绪", icon="✅")
+                            st.rerun()
+                        else:
+                            st.warning("Backend 仍在启动中，请稍后点击「重试」")
+                    else:
+                        st.error("启动失败，请检查 Python 环境")
+            with col_b:
+                if st.button("🔄 重试连接", use_container_width=True):
+                    health = check_backend_health()
+                    st.session_state["backend_healthy"] = health is not None and health.get("status") in ("healthy", "degraded")
+                    if st.session_state["backend_healthy"]:
+                        st.toast("✅ Backend 已就绪", icon="✅")
+                        st.rerun()
+                    else:
+                        st.toast("❌ 仍无法连接", icon="❌")
+            with col_c:
+                st.caption(
+                    f"或手动运行: `{_get_python_command()} -m api.main`"
+                )
             st.stop()
 
         # 初始化可观测性（首次调用时）
