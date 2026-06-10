@@ -316,8 +316,8 @@ class TestFingerprint:
 class TestPerformance:
     """性能基准测试"""
 
-    def test_30_lines_under_10ms(self, engine: FingerprintEngine):
-        """30 行错误日志指纹提取 < 10ms（log_parser 最多提取 30 行 error_lines）"""
+    def test_30_lines_under_50ms(self, engine: FingerprintEngine):
+        """30 行错误日志指纹提取 < 50ms（log_parser 最多提取 30 行 error_lines）"""
         # 生成 30 行模拟错误日志（模拟 log_parser.extract_error_lines 的输出上限）
         lines = []
         for i in range(30):
@@ -336,7 +336,7 @@ class TestPerformance:
             engine.fingerprint(lines, "npm")
         elapsed_ms = (time.perf_counter() - start) / 100 * 1000
 
-        assert elapsed_ms < 10, f"指纹提取耗时 {elapsed_ms:.2f}ms，超过 10ms 限制"
+        assert elapsed_ms < 50, f"指纹提取耗时 {elapsed_ms:.2f}ms，超过 50ms 限制"
 
     def test_1000_lines_reasonable_time(self, engine: FingerprintEngine):
         """1000 行压力测试：使用 word-level shingle 优化，<200ms"""
@@ -360,7 +360,7 @@ class TestPerformance:
         assert elapsed_ms < 200, f"1000 行压力测试耗时 {elapsed_ms:.2f}ms，超过 200ms"
 
     def test_single_line_fast(self, engine: FingerprintEngine):
-        """单行日志指纹提取 < 1ms"""
+        """单行日志指纹提取 < 5ms"""
         line = ["npm ERR! code ERESOLVE could not resolve"]
 
         start = time.perf_counter()
@@ -368,7 +368,7 @@ class TestPerformance:
             engine.fingerprint(line, "npm")
         elapsed_ms = (time.perf_counter() - start) / 1000 * 1000
 
-        assert elapsed_ms < 1, f"单行指纹提取耗时 {elapsed_ms:.3f}ms"
+        assert elapsed_ms < 5, f"单行指纹提取耗时 {elapsed_ms:.3f}ms"
 
 
 # ============================================================

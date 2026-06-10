@@ -17,3 +17,8 @@ venv/
 loggazer.db
 loggazer.db-wal
 loggazer.db-shm
+
+# VS Code 扩展构建产物
+vscode-extension/node_modules/
+vscode-extension/out/
+vscode-extension/package-lock.json

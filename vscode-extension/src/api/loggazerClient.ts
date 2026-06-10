@@ -129,7 +129,7 @@ export class LogGazerClient {
                     `Or configure a different URL in VS Code settings (loggazer.apiUrl).`
                 );
             }
-            if (err instanceof DOMException && err.name === 'AbortError') {
+            if (err instanceof Error && err.name === 'AbortError') {
                 throw new Error('Analysis request timed out (180s). The log may be too large or the backend is overloaded.');
             }
             throw err;

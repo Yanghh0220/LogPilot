@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "loggazer": {
+      "command": "python",
+      "args": ["-m", "mcp_server", "--transport", "stdio"],
+      "env": {
+        "DEEPSEEK_API_KEY": "sk-your-deepseek-api-key",
+        "LOGGAZER_API_URL": "http://localhost:8000",
+        "LOGGAZER_API_KEY": ""
+      },
+      "description": "LogGazer — AI-powered CI/CD log analysis via MCP. Analyze build failure logs, get root cause analysis, fix suggestions, and error patterns."
+    }
+  }
+}
