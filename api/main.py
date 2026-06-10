@@ -10,149 +10,37 @@
 # Design principles:
 #   - Zero Streamlit dependency (no st.* calls)
 #   - RFC 7807 Problem Details for all errors
-#   - Pydantic v2 request/response models
+#   - Pydantic v2 request/response models (in api/schemas.py)
+#   - Dependency injection (in api/dependencies.py)
 #   - API Key auth for cloud mode; no auth for local mode
 #   - OpenTelemetry trace propagation via X-Request-ID
 
 import logging
 import time
-import uuid
-from typing import Optional, Literal
+from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Depends, Header, BackgroundTasks, Request
+from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, field_validator, model_validator
+from fastapi.exceptions import RequestValidationError
 
-from models import AnalysisResult
-
-# Lazy: allow server startup even without API key configured
-# analyze_log is imported inside the endpoint to avoid
-# module-level OpenAI client creation failure
-_analyze_log = None
-
-
-def _get_analyzer():
-    """Lazy-load analyzer to allow server startup without API key."""
-    global _analyze_log
-    if _analyze_log is None:
-        from analyzer import analyze_log
-        _analyze_log = analyze_log
-    return _analyze_log
+from api.schemas import (
+    ProblemDetail,
+    AnalyzeRequest,
+    AnalyzeResponse,
+    AnalyzeResponseMeta,
+    HealthResponse,
+)
+from api.dependencies import (
+    get_analyzer,
+    get_request_id,
+    get_api_key,
+    verify_api_key,
+    get_rate_limiter,
+    get_observability,
+)
 
 logger = logging.getLogger("api")
-
-# ============================================================
-#  Problem Details (RFC 7807)
-# ============================================================
-
-class ProblemDetail(BaseModel):
-    """RFC 7807 Problem Details for HTTP APIs"""
-    type: str = Field(
-        default="about:blank",
-        description="A URI reference that identifies the problem type",
-    )
-    title: str = Field(..., description="A short, human-readable summary of the problem")
-    status: int = Field(..., description="The HTTP status code")
-    detail: str = Field(..., description="A human-readable explanation specific to this occurrence")
-    instance: Optional[str] = Field(None, description="A URI reference that identifies the specific occurrence")
-
-    model_config = {"json_schema_extra": {"examples": [{
-        "type": "https://loggazer.dev/errors/validation-error",
-        "title": "Validation Error",
-        "status": 422,
-        "detail": "log_text cannot be only whitespace",
-        "instance": "/v1/analyze",
-    }]}}
-
-
-# ============================================================
-#  Request / Response Models
-# ============================================================
-
-class AnalyzeRequest(BaseModel):
-    """POST /v1/analyze request body"""
-    log_text: str = Field(
-        ...,
-        min_length=10,
-        max_length=100000,
-        description="Complete build failure log text (plain text)",
-    )
-    platform_hint: Optional[str] = Field(
-        None,
-        description="Optional platform hint, e.g. 'npm', 'docker', 'pytest'. Auto-detect if omitted.",
-    )
-    include_rag: bool = Field(
-        True,
-        description="Enable RAG historical case augmentation",
-    )
-    cache_policy: Literal["auto", "force_refresh", "cache_only"] = Field(
-        "auto",
-        description="Cache strategy: auto=use cache if available, force_refresh=skip cache, cache_only=only return cached",
-    )
-
-    @field_validator("log_text")
-    @classmethod
-    def not_only_whitespace(cls, v: str) -> str:
-        if not v.strip():
-            raise ValueError("log_text cannot be only whitespace")
-        return v
-
-    @field_validator("platform_hint")
-    @classmethod
-    def validate_platform(cls, v: Optional[str]) -> Optional[str]:
-        if v is not None and not v.strip():
-            return None
-        return v
-
-
-class AnalyzeResponseMeta(BaseModel):
-    """Metadata about the analysis execution"""
-    duration_ms: float = Field(..., description="Total analysis time in milliseconds")
-    cache_status: Literal["hit", "miss", "rag", "disabled"] = Field(..., description="Cache layer result")
-    model_used: str = Field(..., description="AI model name (e.g. deepseek-chat)")
-    cost_usd: float = Field(0.0, description="Estimated cost in USD")
-    platform_detected: str = Field(..., description="Auto-detected platform")
-
-
-class AnalyzeResponse(BaseModel):
-    """POST /v1/analyze response"""
-    result: AnalysisResult
-    meta: AnalyzeResponseMeta
-    request_id: str = Field(..., description="OpenTelemetry trace_id for end-to-end correlation")
-
-
-class HealthResponse(BaseModel):
-    """GET /v1/health response"""
-    status: Literal["healthy", "degraded", "unhealthy"] = Field(..., description="Overall health status")
-    version: str = Field("1.1.0")
-    checks: dict = Field(..., description="Individual component health checks")
-    uptime_seconds: float = Field(..., description="Server uptime in seconds")
-
-
-class ClusterItem(BaseModel):
-    """Single cluster insight item"""
-    cluster_id: int
-    occurrence_count: int
-    first_seen: str
-    last_seen: str
-    platform_distribution: dict
-    avg_severity_score: float
-    is_active: bool
-
-
-class ClustersResponse(BaseModel):
-    """GET /v1/clusters response"""
-    clusters: list[ClusterItem]
-    total: int
-
-
-class RateLimitHeaders(BaseModel):
-    """Rate limit information returned in response headers"""
-    limit: int = Field(..., description="Maximum requests per window")
-    remaining: int = Field(..., description="Remaining requests in current window")
-    retry_after: int = Field(0, description="Seconds to wait before retry if limited")
-
 
 # ============================================================
 #  FastAPI Application
@@ -205,103 +93,6 @@ _start_time = time.time()
 
 
 # ============================================================
-#  Dependency Injection
-# ============================================================
-
-async def get_request_id(
-    x_request_id: Optional[str] = Header(None, alias="X-Request-ID"),
-) -> str:
-    """Extract or generate a request ID for trace correlation."""
-    return x_request_id or str(uuid.uuid4())
-
-
-async def get_api_key(
-    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
-) -> Optional[str]:
-    """Extract API Key from header. Returns None in local mode."""
-    return x_api_key
-
-
-def verify_api_key(api_key: Optional[str] = Depends(get_api_key)) -> Optional[str]:
-    """
-    Verify API Key if required.
-
-    Local mode (no key configured): always pass.
-    Cloud mode (LOGGAZER_API_KEY env var set): validate header.
-    """
-    import os
-    configured_key = os.getenv("LOGGAZER_API_KEY")
-
-    if not configured_key:
-        # Local mode: no authentication
-        return None
-
-    if not api_key:
-        raise HTTPException(
-            status_code=401,
-            detail=ProblemDetail(
-                type="https://loggazer.dev/errors/unauthorized",
-                title="Authentication Required",
-                status=401,
-                detail="X-API-Key header is required in cloud mode. "
-                        "Set LOGGAZER_API_KEY environment variable on the server, "
-                        "and pass it as X-API-Key header.",
-                instance="/v1/analyze",
-            ).model_dump(),
-            headers={"WWW-Authenticate": "ApiKey"},
-        )
-
-    if api_key != configured_key:
-        raise HTTPException(
-            status_code=401,
-            detail=ProblemDetail(
-                type="https://loggazer.dev/errors/unauthorized",
-                title="Invalid API Key",
-                status=401,
-                detail="The provided X-API-Key is invalid.",
-                instance="/v1/analyze",
-            ).model_dump(),
-            headers={"WWW-Authenticate": "ApiKey"},
-        )
-
-    return api_key
-
-
-# ---- Rate Limiter (lazy init) ----
-_rate_limiter = None
-
-
-def _get_rate_limiter():
-    """Get or initialize the TokenBucketRateLimiter singleton."""
-    global _rate_limiter
-    if _rate_limiter is None:
-        from rate_limiter import TokenBucketRateLimiter
-        _rate_limiter = TokenBucketRateLimiter(redis_client=None)
-    return _rate_limiter
-
-
-# ---- Observability (lazy init) ----
-_obs = None
-
-
-def _get_obs():
-    """Get or initialize ObservabilityManager singleton."""
-    global _obs
-    if _obs is None:
-        try:
-            from observability import ObservabilityManager
-            _obs = ObservabilityManager(
-                redis_client=None,
-                monthly_budget=float(__import__("os").getenv("LOGGAZER_MONTHLY_BUDGET", "50")),
-                sampling_rate=float(__import__("os").getenv("LOGGAZER_SAMPLING_RATE", "0.1")),
-            )
-        except Exception as e:
-            logger.warning("ObservabilityManager init failed: %s", e)
-            _obs = None
-    return _obs
-
-
-# ============================================================
 #  Exception Handlers
 # ============================================================
 
@@ -321,10 +112,6 @@ async def validation_exception_handler(request: Request, exc: ValueError):
     )
 
 
-from fastapi.exceptions import RequestValidationError
-from fastapi.encoders import jsonable_encoder
-
-
 @app.exception_handler(RequestValidationError)
 async def pydantic_validation_handler(request: Request, exc: RequestValidationError):
     """Handle Pydantic RequestValidationError → RFC 7807 Problem Detail.
@@ -333,7 +120,6 @@ async def pydantic_validation_handler(request: Request, exc: RequestValidationEr
     field-level validation failures (min_length, type mismatches, etc.).
     This handler converts them to the same RFC 7807 format.
     """
-    # Extract user-friendly detail from Pydantic errors
     errors = exc.errors()
     detail_parts = []
     for err in errors:
@@ -404,7 +190,6 @@ async def health_check():
     try:
         from config import DEEPSEEK_API_KEY, AI_PROVIDER
         if DEEPSEEK_API_KEY:
-            # Quick connectivity check (don't waste tokens on a full call)
             checks["ai_provider"] = {
                 "status": "ok",
                 "provider": AI_PROVIDER,
@@ -432,7 +217,6 @@ async def health_check():
             "status": "degraded",
             "message": "Redis unavailable — using in-memory fallback",
         }
-        # Redis is optional, don't mark degraded
 
     # 3. Qdrant / Cache (optional)
     try:
@@ -458,8 +242,14 @@ async def health_check():
         checks["database"] = {"status": "error", "message": str(e)}
         degraded = True
 
-    overall = "unhealthy" if any(c.get("status") == "error" and k in ["ai_provider", "database"] for k, c in checks.items()) else \
-              "degraded" if degraded else "healthy"
+    overall = (
+        "unhealthy" if any(
+            c.get("status") == "error" and k in ["ai_provider", "database"]
+            for k, c in checks.items()
+        )
+        else "degraded" if degraded
+        else "healthy"
+    )
 
     return {
         "status": overall,
@@ -534,10 +324,10 @@ async def analyze_endpoint(
     Accepts raw build log text and returns a structured analysis result
     with root causes, fix suggestions, debug commands, severity, and prevention tips.
     """
-    obs = _get_obs()
+    obs = get_observability()
 
     # ---- 1. Rate Limit Check ----
-    limiter = _get_rate_limiter()
+    limiter = get_rate_limiter()
     user_id = x_api_key or "anonymous"
 
     max_requests = 20 if x_api_key else 5
@@ -584,7 +374,7 @@ async def analyze_endpoint(
     cache_status = "miss"
 
     try:
-        analyze_log = _get_analyzer()
+        analyze_log = get_analyzer()
 
         if obs:
             obs.increment_active_requests()
@@ -665,11 +455,10 @@ async def analyze_endpoint(
         from config import DEEPSEEK_MODEL, AI_PROVIDER
         model_used = DEEPSEEK_MODEL
 
-        # Estimate token cost based on log size + response size
         from cost_calculator import CostCalculator
         cc = CostCalculator()
-        est_input_tokens = len(request.log_text) // 3  # rough estimate
-        est_output_tokens = 500  # typical analysis output
+        est_input_tokens = len(request.log_text) // 3
+        est_output_tokens = 500
         cost_estimate = cc.calculate(model_used, est_input_tokens, est_output_tokens)
 
         if obs:
@@ -680,8 +469,6 @@ async def analyze_endpoint(
     # Build response
     parsed = __import__("log_parser").parse_log(request.log_text)
     platform_detected = parsed["platform"]
-
-    remaining = limiter.get_remaining_quota(user_id, max_requests, window_seconds)
 
     return AnalyzeResponse(
         result=result,
@@ -748,7 +535,7 @@ async def get_platforms():
     for name, signatures in PLATFORM_SIGNATURES.items():
         platforms.append({
             "name": name,
-            "detection_keywords": signatures[:3],  # First 3 for brevity
+            "detection_keywords": signatures[:3],
         })
 
     return {
@@ -800,4 +587,3 @@ async def root():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("api.main:app", host="127.0.0.1", port=8000, reload=True)
-

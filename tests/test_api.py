@@ -42,8 +42,8 @@ def client():
     cross-test contamination (all tests share the in-memory limiter).
     """
     # Reset rate limiter singleton to avoid cross-test 429 errors
-    import api.main
-    api.main._rate_limiter = None
+    from api.dependencies import reset_rate_limiter
+    reset_rate_limiter()
 
     # Mock the lazy analyzer loader to avoid real AI calls
     from unittest.mock import MagicMock
@@ -72,7 +72,8 @@ def client():
     )
 
     mock_analyze = MagicMock(return_value=mock_result)
-    with patch("api.main._get_analyzer", return_value=mock_analyze):
+    # Patch at the api.main namespace level (where it's imported and called)
+    with patch("api.main.get_analyzer", return_value=mock_analyze):
         from api.main import app
         with TestClient(app) as tc:
             yield tc
@@ -386,7 +387,7 @@ class TestAuth:
     def test_missing_api_key_returns_401_in_cloud_mode(self, valid_npm_log):
         """When LOGGAZER_API_KEY is set, missing X-API-Key returns 401."""
         # Recreate client with cloud mode env
-        with patch("api.main._get_analyzer") as mock_analyze:
+        with patch("api.main.get_analyzer") as mock_analyze:
             from models import AnalysisResult, RootCause, FixSuggestion
             mock_result = AnalysisResult(
                 error_summary="Test",
@@ -418,7 +419,7 @@ class TestAuth:
     @patch.dict(os.environ, {"LOGGAZER_API_KEY": "test-api-key-123"})
     def test_invalid_api_key_returns_401(self, valid_npm_log):
         """Wrong API key returns 401."""
-        with patch("api.main._get_analyzer") as mock_analyze:
+        with patch("api.main.get_analyzer") as mock_analyze:
             from models import AnalysisResult, RootCause, FixSuggestion
             mock_result = AnalysisResult(
                 error_summary="Test",

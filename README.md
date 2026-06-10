@@ -242,17 +242,19 @@ CACHE_EMBEDDING_MODEL=all-MiniLM-L6-v2  # Embedding 模型
 
 ### 前置条件
 
-- **Python 3.10+**（推荐 3.11）
+- **Python 3.11+**
 - **DeepSeek API Key**（[点此注册](https://platform.deepseek.com/)，新用户有免费额度）
 
-### 安装步骤
+### 🆕 推荐启动方式：前后端分离（BFF Architecture）
+
+LogGazer v1.1 采用 Backend-for-Frontend 架构，FastAPI 后端提供 REST API，Streamlit 作为纯前端。
 
 ```bash
 # 1. 克隆项目
 git clone https://github.com/Yanghh0220/LogGazer.git
 cd LogGazer
 
-# 2. 创建虚拟环境（为什么？防止依赖污染系统 Python）
+# 2. 创建虚拟环境
 python -m venv venv
 
 # 3. 激活虚拟环境
@@ -266,22 +268,41 @@ pip install -r requirements.txt
 
 # 5. 配置 API Key
 cp .env.example .env
-# 然后用编辑器打开 .env，填入你的 DeepSeek API Key
+# 用编辑器打开 .env，填入你的 DeepSeek API Key
 
-# 6. 启动！
+# 6. 启动 FastAPI 后端（终端 1）
+python -m api.main
+# 或者: bash scripts/start_backend.sh
+# API 文档: http://localhost:8000/docs
+
+# 7. 启动 Streamlit 前端（终端 2）
 streamlit run app.py
+# 前端会自动连接到 http://localhost:8000
 ```
 
-浏览器会自动打开 `http://localhost:8501`，粘贴一段日志试试吧 🎉
+浏览器自动打开 `http://localhost:8501`。如果后端未启动，Streamlit 会显示友好提示。
+
+### 🏚️ Legacy 单进程模式（即将废弃）
+
+```bash
+# 直接启动 Streamlit（内嵌分析逻辑，无需额外后端）
+streamlit run app.py
+# 注意：此模式在 app.py 中直接 import analyzer，不经过 API 层
+```
+
+> ⚠️ Legacy 模式将在未来版本中移除，请尽快迁移到前后端分离模式。
 
 ### 运行测试
 
 ```bash
-# 运行全部测试
+# 运行核心测试
 pytest tests/ -v
 
-# 运行指定测试文件
-pytest tests/test_log_parser.py -v
+# 运行 API 层测试
+pytest api/tests/ -v
+
+# 运行全部测试
+pytest tests/ api/tests/ -v
 ```
 
 ---
