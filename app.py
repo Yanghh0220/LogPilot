@@ -494,6 +494,18 @@ tests/test_auth.py:15: AssertionError
 }
 
 # ============================================
+# 主动后端健康检查 + 后台自动启动
+# ============================================
+# 页面首次渲染时主动检查后端状态并在后台启动，
+# 让后端在用户操作期间启动，避免点击"开始分析"后才等待。
+if st.session_state["backend_healthy"] is None:
+    health = check_backend_health()
+    st.session_state["backend_healthy"] = health is not None and health.get("status") in ("healthy", "degraded")
+    if not st.session_state["backend_healthy"] and not st.session_state.get("backend_starting"):
+        # Fire-and-forget: 启动进程后不等待，让用户继续操作
+        start_backend_process()
+
+# ============================================
 # 标题
 # ============================================
 st.markdown("""
@@ -571,13 +583,16 @@ if analyze_clicked:
         st.warning("请先粘贴日志内容")
     else:
         # ---- 后端健康检查 + 自动启动 ----
-        if st.session_state["backend_healthy"] is None:
+        # 始终重新检查健康状态（后端可能在后台已启动完成）
+        if not st.session_state["backend_healthy"]:
             health = check_backend_health()
             st.session_state["backend_healthy"] = health is not None and health.get("status") in ("healthy", "degraded")
 
         if not st.session_state["backend_healthy"]:
+            backend_ready = False
+
             if not st.session_state.get("backend_starting"):
-                # First attempt: auto-start silently
+                # 尚未尝试启动 — 现在启动并等待
                 started = start_backend_process()
                 if started:
                     st.toast("🚀 LogGazer Backend 正在启动...", icon="🚀")
@@ -588,42 +603,53 @@ if analyze_clicked:
                         st.rerun()
                     else:
                         st.toast("⏳ Backend 启动较慢，请稍候点击「重试」", icon="⏳")
+            else:
+                # 后台已在启动中（由页面加载时触发）— 再等待一会儿
+                st.toast("⏳ Backend 正在启动中，请稍候...", icon="⏳")
+                backend_ready = wait_for_backend(timeout=10.0)
+                if backend_ready:
+                    st.toast("✅ Backend 已就绪", icon="✅")
+                    st.session_state["backend_healthy"] = True
+                    st.rerun()
+                else:
+                    st.toast("⏳ Backend 仍在启动中...", icon="⏳")
 
-            # Show interactive recovery panel
-            st.warning(
-                f"⚠️ **LogGazer Backend 未就绪**\n\n"
-                f"无法连接到 `{BACKEND_URL}`。"
-            )
+            # 后端仍未就绪 — 显示交互式恢复面板
+            if not st.session_state["backend_healthy"]:
+                st.warning(
+                    f"⚠️ **LogGazer Backend 未就绪**\n\n"
+                    f"无法连接到 `{BACKEND_URL}`。"
+                )
 
-            col_a, col_b, col_c = st.columns([1, 1, 2])
-            with col_a:
-                if st.button("🚀 启动 Backend", type="primary", use_container_width=True):
-                    started = start_backend_process()
-                    if started:
-                        st.toast("正在启动...", icon="🚀")
-                        backend_ready = wait_for_backend(timeout=20.0)
-                        if backend_ready:
-                            st.session_state["backend_healthy"] = True
+                col_a, col_b, col_c = st.columns([1, 1, 2])
+                with col_a:
+                    if st.button("🚀 启动 Backend", type="primary", use_container_width=True):
+                        started = start_backend_process()
+                        if started:
+                            st.toast("正在启动...", icon="🚀")
+                            backend_ready = wait_for_backend(timeout=20.0)
+                            if backend_ready:
+                                st.session_state["backend_healthy"] = True
+                                st.toast("✅ Backend 已就绪", icon="✅")
+                                st.rerun()
+                            else:
+                                st.warning("Backend 仍在启动中，请稍后点击「重试」")
+                        else:
+                            st.error("启动失败，请检查 Python 环境")
+                with col_b:
+                    if st.button("🔄 重试连接", use_container_width=True):
+                        health = check_backend_health()
+                        st.session_state["backend_healthy"] = health is not None and health.get("status") in ("healthy", "degraded")
+                        if st.session_state["backend_healthy"]:
                             st.toast("✅ Backend 已就绪", icon="✅")
                             st.rerun()
                         else:
-                            st.warning("Backend 仍在启动中，请稍后点击「重试」")
-                    else:
-                        st.error("启动失败，请检查 Python 环境")
-            with col_b:
-                if st.button("🔄 重试连接", use_container_width=True):
-                    health = check_backend_health()
-                    st.session_state["backend_healthy"] = health is not None and health.get("status") in ("healthy", "degraded")
-                    if st.session_state["backend_healthy"]:
-                        st.toast("✅ Backend 已就绪", icon="✅")
-                        st.rerun()
-                    else:
-                        st.toast("❌ 仍无法连接", icon="❌")
-            with col_c:
-                st.caption(
-                    f"或手动运行: `{_get_python_command()} -m api.main`"
-                )
-            st.stop()
+                            st.toast("❌ 仍无法连接", icon="❌")
+                with col_c:
+                    st.caption(
+                        f"或手动运行: `{_get_python_command()} -m api.main`"
+                    )
+                st.stop()
 
         # 初始化可观测性（首次调用时）
         obs = _get_observability()
