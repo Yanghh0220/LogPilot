@@ -305,7 +305,7 @@ class TestRAGPromptIntegration:
 
     def test_rag_context_injected_into_prompt(self):
         """RAG 上下文正确注入到提示词中"""
-        from prompt import build_rag_augmented_prompt, build_analysis_prompt
+        from prompts import build_rag_augmented_prompt, build_analysis_prompt
 
         base_prompt = build_analysis_prompt(
             source="npm",
@@ -331,7 +331,7 @@ class TestRAGPromptIntegration:
 
     def test_empty_rag_context_returns_base(self):
         """空 RAG 上下文返回原始提示词"""
-        from prompt import build_rag_augmented_prompt
+        from prompts import build_rag_augmented_prompt
 
         base = "original prompt"
         result = build_rag_augmented_prompt("", base)
@@ -339,7 +339,7 @@ class TestRAGPromptIntegration:
 
     def test_rag_context_limits_to_3_cases(self):
         """RAG 上下文最多 3 条案例（由 get_rag_context 控制）"""
-        from prompt import build_rag_augmented_prompt
+        from prompts import build_rag_augmented_prompt
 
         cases = [
             f"- **[npm]** error {i}\n  修复命令: `cmd{i}` (命中 {i} 次)"

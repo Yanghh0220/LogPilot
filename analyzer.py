@@ -1,33 +1,20 @@
-# analyzer.py - AI 分析引擎（结构化生成版）
+# analyzer.py - AI 分析引擎（业务流程编排层）
 #
-# 职责：调用 DeepSeek API，处理所有异常，返回结构化结果
+# 职责：编排日志分析流程，不包含任何 HTTP 调用、重试逻辑、异常类定义
 # 设计原则：对外只暴露一个函数
 #   - analyze_log(log) → 完整分析流程，返回 AnalysisResult 实例
 #
 # 与旧版的区别：
-# - 移除了 json.loads() + Markdown 围栏剥离的 hack
-# - 使用 call_ai_structured() 实现 Instructor 结构化生成
-# - 返回值从 dict 升级为 Pydantic BaseModel 实例
-# - 保留 call_ai() 作为 legacy 降级路径
+# - AI 调用全部委托给 ai_engine（call_ai_structured / call_ai_legacy）
+# - 异常类统一从 ai_engine import
+# - 提示词构建统一从 prompts import
+# - 返回值是 Pydantic BaseModel 实例
 
 import json
 import time
-import functools
 import logging
-from typing import Callable, Any
 
-from openai import (
-    OpenAI,
-    AuthenticationError,
-    RateLimitError as OpenAIRateLimitError,
-    APIConnectionError,
-    APITimeoutError,
-)
-from openai import BadRequestError
-from dotenv import load_dotenv
-
-from prompt import (
-    SYSTEM_PROMPT,
+from prompts import (
     build_analysis_prompt,
     build_rag_augmented_prompt,
     build_system_prompt,
@@ -35,10 +22,6 @@ from prompt import (
 from log_parser import parse_log, get_error_stats
 from models import AnalysisResult
 from config import (
-    DEEPSEEK_BASE_URL,
-    DEEPSEEK_MODEL,
-    DEEPSEEK_TEMPERATURE,
-    DEEPSEEK_API_KEY,
     CACHE_ENABLED,
     CACHE_SIMILARITY_HIGH,
     CACHE_SIMILARITY_LOW,
@@ -47,17 +30,7 @@ from config import (
     CACHE_EMBEDDING_MODEL,
 )
 
-# 加载 .env 文件中的环境变量
-load_dotenv()
-
 logger = logging.getLogger(__name__)
-
-# 创建 OpenAI 兼容客户端（DeepSeek 兼容 OpenAI 接口）
-# 用于 legacy 路径的直接 API 调用
-_client = OpenAI(
-    base_url=DEEPSEEK_BASE_URL,
-    api_key=DEEPSEEK_API_KEY,
-)
 
 
 # ============================================================
@@ -106,134 +79,9 @@ def _reset_cache():
 
 
 # ============================================================
-#  自定义异常类
+#  异常类和重试逻辑已全部迁移至 ai_engine.py
+#  analyzer.py 只做业务流程编排，不再定义异常类或 HTTP 调用
 # ============================================================
-
-class AuthError(Exception):
-    """认证失败 — API Key 无效或已过期"""
-    pass
-
-
-class RateLimitError(Exception):
-    """请求频率超限 — 调用太频繁了"""
-    pass
-
-
-class QuotaError(Exception):
-    """余额不足 — API 账户没钱了"""
-    pass
-
-
-# ============================================================
-#  重试装饰器（指数退避）
-# ============================================================
-
-def _retry(max_retries: int = 3) -> Callable:
-    """带指数退避的重试装饰器（仅对网络问题重试）"""
-    def decorator(func: Callable) -> Callable:
-        @functools.wraps(func)
-        def wrapper(*args: Any, **kwargs: Any) -> Any:
-            last_exception = None
-
-            for attempt in range(max_retries + 1):
-                try:
-                    return func(*args, **kwargs)
-                except (AuthError, RateLimitError, QuotaError):
-                    raise
-                except (APIConnectionError, APITimeoutError) as e:
-                    last_exception = e
-                    if attempt < max_retries:
-                        wait_time = 2 ** attempt
-                        time.sleep(wait_time)
-                        continue
-                except Exception:
-                    raise
-
-            raise last_exception
-
-        return wrapper
-    return decorator
-
-
-# ============================================================
-#  HTTP 错误解析
-# ============================================================
-
-def _parse_http_error(status_code: int, message: str) -> Exception:
-    """根据 HTTP 状态码返回对应的自定义异常"""
-    if status_code == 401:
-        return AuthError(f"认证失败（401）：API Key 无效或已过期。{message}")
-    elif status_code == 429:
-        return RateLimitError(f"请求频率超限（429）：请稍后再试。{message}")
-    elif status_code == 402:
-        return QuotaError(f"余额不足（402）：请充值后再试。{message}")
-    elif status_code == 400:
-        return ValueError(f"请求参数错误（400）：{message}")
-    else:
-        return ConnectionError(f"API 请求失败（{status_code}）：{message}")
-
-
-# ============================================================
-#  Legacy AI 调用（字符串返回，用于降级路径）
-# ============================================================
-
-@_retry(max_retries=3)
-def call_ai(prompt: str) -> str:
-    """
-    Legacy AI 调用：发送提示词，返回原始字符串
-
-    保留作为降级路径，当 Instructor 不可用时使用。
-    """
-    if not DEEPSEEK_API_KEY:
-        return (
-            "⚠️ **API Key 未配置**\n\n"
-            "请在 `.env` 文件中配置 `DEEPSEEK_API_KEY`"
-        )
-
-    try:
-        response = _client.chat.completions.create(
-            model=DEEPSEEK_MODEL,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=DEEPSEEK_TEMPERATURE,
-        )
-
-        result_text: str = response.choices[0].message.content or ""
-
-        if not result_text.strip():
-            return (
-                "⚠️ **AI 返回了空内容**\n\n"
-                "这可能是临时问题，请点击「开始分析」重试一次。"
-            )
-
-        return result_text
-
-    except AuthenticationError as e:
-        parsed = _parse_http_error(401, str(e))
-        raise parsed
-
-    except OpenAIRateLimitError as e:
-        parsed = _parse_http_error(429, str(e))
-        raise parsed
-
-    except BadRequestError as e:
-        parsed = _parse_http_error(400, str(e))
-        raise parsed
-
-    except (APIConnectionError, APITimeoutError):
-        raise
-
-    except Exception as e:
-        return (
-            "⚠️ **AI 调用失败**\n\n"
-            f"错误信息：`{type(e).__name__}: {str(e)[:200]}`\n\n"
-            "**请尝试以下操作：**\n"
-            "1. 检查网络连接是否正常\n"
-            "2. 确认 API Key 是否有效\n"
-            "3. 稍等片刻后重试"
-        )
 
 
 # ============================================================
@@ -387,34 +235,22 @@ def _store_to_cluster_engine(
 
 def _legacy_analyze(user_prompt: str) -> AnalysisResult:
     """
-    Legacy 分析路径：字符串调用 + JSON 解析
+    Legacy 分析路径：字符串调用 + 尽力解析
 
     当 Instructor 完全不可用时的降级方案。
-    保留旧版的 Markdown 围栏剥离逻辑，但用 Pydantic 做最终校验。
+    AI 调用委托给 ai_engine.call_ai_legacy()，
+    JSON 解析委托给 ai_engine._best_effort_parse_to_model()（已含围栏剥离等逻辑）。
+    此函数不再包含任何 json.loads 或 Markdown 围栏剥离代码。
     """
-    result_text = call_ai(user_prompt)
+    from ai_engine import call_ai_legacy, _best_effort_parse_to_model, _create_fallback_model
+
+    system_prompt = build_system_prompt(AnalysisResult.model_json_schema())
+    result_text = call_ai_legacy(system_prompt, user_prompt)
 
     if result_text.startswith("⚠️"):
-        from ai_engine import _create_fallback_model
         return _create_fallback_model(AnalysisResult, result_text)
 
-    # 剥离 Markdown 围栏
-    cleaned: str = result_text.strip()
-    if cleaned.startswith("```json"):
-        cleaned = cleaned[7:]
-    if cleaned.startswith("```"):
-        cleaned = cleaned[3:]
-    if cleaned.endswith("```"):
-        cleaned = cleaned[:-3]
-    cleaned = cleaned.strip()
-
-    try:
-        data = json.loads(cleaned)
-        return AnalysisResult.model_validate(data)
-    except (json.JSONDecodeError, Exception) as e:
-        logger.warning("Legacy JSON 解析失败: %s", e)
-        from ai_engine import _best_effort_parse_to_model
-        return _best_effort_parse_to_model(cleaned, AnalysisResult)
+    return _best_effort_parse_to_model(result_text, AnalysisResult)
 
 
 # ============================================================

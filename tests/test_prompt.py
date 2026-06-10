@@ -8,7 +8,7 @@
 # 如何运行？
 # 在项目根目录执行：pytest tests/test_prompt.py -v
 
-from prompt import SYSTEM_PROMPT, build_analysis_prompt, build_rag_augmented_prompt, build_system_prompt
+from prompts import SYSTEM_PROMPT, build_analysis_prompt, build_rag_augmented_prompt, build_system_prompt
 
 
 # ============================================

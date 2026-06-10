@@ -192,10 +192,11 @@ class TestParseLog:
         """返回的字典包含所有必要字段"""
         log = "npm ERR! code ERESOLVE\nERROR: something failed"
         result = parse_log(log)
-        assert "platform" in result
-        assert "error_lines" in result
-        assert "truncated_log" in result
-        assert "is_truncated" in result
+        # ParsedLog is a BaseModel; verify all fields accessible via attribute
+        assert result.platform
+        assert isinstance(result.error_lines, list)
+        assert isinstance(result.truncated_log, str)
+        assert isinstance(result.is_truncated, bool)
 
     def test_platform_detection(self):
         """parse_log 能正确识别平台"""

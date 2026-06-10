@@ -1,208 +1,269 @@
-# prompts.py - Prompt 工程模块
+# prompts.py - Prompt 工程模块（Schema 自省版）
 #
 # 职责：
-#   1. 定义 Few-shot 示例（让 AI 知道期望的输出格式和详细程度）
-#   2. 构建用户提示词（把日志预处理结果填进模板）
+# 1. 定义 Few-shot 示例（让 AI 知道期望的输出长什么样）
+# 2. 构建用户提示词（把日志预处理结果填进模板）
+# 3. 动态注入 JSON Schema（让 AI "知道"自己要生成什么结构）
 #
-# 为什么单独放一个文件？
-#   - Prompt 是 AI 项目的核心资产，值得单独管理
-#   - 方便调试和迭代，不用去业务代码里翻
-#   - 改 Prompt 不需要碰 AI 调用逻辑
+# Schema 自省设计：
+# AnalysisResult.model_json_schema() 会自动生成 JSON Schema
+# 这个 Schema 被注入到 System Prompt 中，让 LLM 明确知道：
+# - 有哪些字段、每个字段的类型和约束
+# - 枚举值（如 severity: "low" | "medium" | "high" | "critical"）
+# - 列表长度限制（如 root_causes 最多 5 个）
+# - 嵌套结构（如 RootCause 的 description + probability）
+#
+# 为什么不在 prompt 里手写 JSON 格式？
+# - 手写容易和 Pydantic Schema 不一致（如当前的 "prevention" 是字符串 vs 列表）
+# - Schema 自动生成，保证 prompt 和代码 100% 同步
 
+import json
 from typing import Optional
 
 
 # ============================================================
 #  Few-shot 示例
 # ============================================================
-# 什么是 Few-shot？给 AI 一个"参考答案"，让它知道期望的输出长什么样
-# 为什么用 npm 依赖冲突？这是最常见的构建错误之一，覆盖度高
-#
-# 这个示例展示了分析报告的完整结构：
-# - 错误摘要（一句话）
-# - 根因分析（带可能性百分比，总和 = 100%）
-# - 修复步骤（推荐方案 + 临时方案，附命令）
-# - 排查命令（代码块 + 注释）
-# - 严重程度（带理由）
-# - 预防建议（具体可执行）
+# 示例输出必须符合 AnalysisResult 的完整 Schema
+# 包含新增字段：severity（列表）、security_warning
 
-FEW_SHOT_EXAMPLE: str = """
+FEW_SHOT_EXAMPLE = """
 ===== 参考示例 =====
 
 【示例输入】
 平台: npm
 错误行:
 npm ERR! code ERESOLVE
-npm ERR! ERESOLVE unable to resolve dependency tree
-npm ERR! peer react@"^17.0.0" from react-beautiful-dnd@13.1.1
+npm ERR! ERESOLVE could not resolve
+npm ERR! Conflicting peer dependency: react@17.0.2
+
+日志:
+npm ERR! code ERESOLVE
+npm ERR! ERESOLVE could not resolve
+npm ERR! While resolving: react-scripts@5.0.1
+npm ERR! Found: react@18.2.0
+npm ERR! node_modules/react
+npm ERR!   react@"^18.2.0" from the root project
+npm ERR!
+npm ERR! Conflicting peer dependency: react@17.0.2
+npm ERR! node_modules/react
+npm ERR!   peer react@"^17.0.0" from @testing-library/react@11.2.7
+npm ERR!
+npm ERR! Fix the upstream dependency conflict, or retry
+npm ERR! this command with --force or --legacy-peer-deps
 
 【示例输出】
-
-### 🔴 错误摘要
-npm 依赖解析冲突：react 版本不兼容导致安装失败
-
-### 🔍 根因分析
-1. **react-beautiful-dnd@13.1.1 要求 react@^17.0.0，但当前项目使用 react@18.x（可能性 70%）**：
-   该库的 peerDependencies 锁定了 React 17，而项目已升级到 18，两者版本范围无交集，npm 无法自动解析。
-
-2. **package-lock.json 中残留旧版依赖树，与 package.json 不一致（可能性 20%）**：
-   之前可能在 React 17 环境下安装过，lock 文件中仍锁定旧版本，导致冲突。
-
-3. **npm 版本过低，依赖解析算法不完善（可能性 10%）**：
-   npm 7 以下对 peer dependency 的处理较宽松，升级后变严格，暴露了隐藏的冲突。
-
-### 🛠️ 修复步骤
-
-**方案一（推荐）：换用兼容 React 18 的拖拽库**
-```bash
-npm uninstall react-beautiful-dnd
-npm install @hello-pangea/dnd
-```
-`@hello-pangea/dnd` 是 `react-beautiful-dnd` 的社区维护分支，已完整支持 React 18。
-
-**方案二（临时）：跳过 peer dependency 检查**
-```bash
-npm install --legacy-peer-deps
-```
-这会跳过严格的版本兼容性检查，适合快速验证，但不推荐长期使用。
-
-### 📋 排查命令
-
-```bash
-# 查看当前 react 版本及其依赖关系
-npm ls react
-```
-
-```bash
-# 查看哪个包依赖了 react 17
-npm why react
-```
-
-```bash
-# 检查所有过时的依赖
-npm outdated
-```
-
-### ⚡ 严重程度
-🟡 中 — 非核心功能（拖拽组件）失败，不影响主流程，但会阻碍部分用户交互功能的开发和测试。
-
-### 💡 预防建议
-1. **升级依赖前先检查兼容性**：使用 `npm outdated` 查看哪些包有大版本更新，再用 `npm info <包名> peerDependencies` 确认兼容性。
-2. **在 CI 中启用 `npm ci` 替代 `npm install`**：`npm ci` 严格按 lock 文件安装，能及早暴露依赖不一致的问题。
+{
+    "error_summary": "npm 依赖解析冲突：react 版本不兼容",
+    "error_detail": "npm ERR! ERESOLVE could not resolve\\nnpm ERR! Conflicting peer dependency: react@17.0.2",
+    "root_causes": [
+        {
+            "description": "react-scripts@5.0.1 要求 react@^18.2.0，但 @testing-library/react@11.2.7 要求 react@^17.0.0，两个依赖对 react 的版本要求互相矛盾",
+            "probability": 90
+        },
+        {
+            "description": "package-lock.json 中锁定了旧版本的依赖树，与当前 package.json 不一致",
+            "probability": 7
+        },
+        {
+            "description": "npm 版本过低，依赖解析算法不完善",
+            "probability": 3
+        }
+    ],
+    "fix_suggestions": [
+        {
+            "title": "使用 --legacy-peer-deps 跳过 peer dependency 检查",
+            "description": "这是最快的解决方式，跳过严格的版本兼容性检查",
+            "command": "npm install --legacy-peer-deps",
+            "safety_level": "safe"
+        },
+        {
+            "title": "升级 @testing-library/react 到兼容 react 18 的版本",
+            "description": "从根本上解决版本冲突，推荐这种方式",
+            "command": "npm install @testing-library/react@latest --save-dev",
+            "safety_level": "safe"
+        },
+        {
+            "title": "降级 react 到 17.x 以匹配 testing-library",
+            "description": "如果项目允许使用旧版 react，这是一种保守的解决方案",
+            "command": "npm install react@17.0.2 react-dom@17.0.2",
+            "safety_level": "safe"
+        }
+    ],
+    "debug_commands": [
+        "npm ls react",
+        "npm why react",
+        "npm outdated"
+    ],
+    "severity": "medium",
+    "prevention": [
+        "在 package.json 中使用更宽松的版本范围（如 ^ 而非 ~）",
+        "定期运行 npm outdated 检查依赖更新",
+        "使用 npm shrinkwrap 锁定依赖版本"
+    ],
+    "security_warning": ""
+}
 """
 
 
 # ============================================================
-#  构建用户提示词
+#  系统提示词模板
+# ============================================================
+# 使用 {schema} 占位符，由 build_system_prompt() 动态注入 JSON Schema
+# 不再手写 JSON 格式描述，避免和 Pydantic Schema 不一致
+
+SYSTEM_PROMPT_TEMPLATE = """你是一名资深的 DevOps 工程师和 CI/CD 专家，拥有 10 年以上的构建系统调试经验。
+
+用户会给你一段构建失败的日志，你需要输出一份结构化的分析报告。
+
+## 输出格式
+
+你必须严格按照下面的 JSON Schema 输出，不要有任何其他文字、解释、markdown 标记：
+
+{schema}
+
+## 硬性规则
+
+1. **只返回 JSON**，不要有任何其他文字、解释、markdown 标记
+2. **root_causes 中所有 probability 之和必须等于 100**，这是最重要的规则
+3. **所有命令必须是可直接复制执行的 bash 命令**
+4. **error_detail 保留英文原文**，方便用户对照原始日志
+5. **其他字段用中文**，且新手能看懂
+6. **如果日志信息不足**，诚实说明"日志信息不足，无法确定根因"，不要编造
+7. **severity 判断标准**：
+   - critical: 构建完全阻断，无法产出任何产物
+   - high: 核心功能失败，但有 workaround
+   - medium: 非核心功能失败（如测试、lint）
+   - low: 警告或非致命问题
+8. **fix_suggestions 最多 3 条**，按可能性从高到低排列
+9. **debug_commands 至少 2 条**，帮助用户进一步排查
+10. **prevention 是列表**，最多 3 条预防建议
+11. **security_warning 留空**，除非你使用的命令有安全风险
+""" + FEW_SHOT_EXAMPLE
+
+
+# ============================================================
+#  旧版 SYSTEM_PROMPT（兼容未迁移的调用方）
+# ============================================================
+# 保留旧版常量，供 analyzer.py 的 legacy 路径使用
+
+SYSTEM_PROMPT = SYSTEM_PROMPT_TEMPLATE.replace("{schema}", "(Schema 将由结构化生成引擎自动注入)")
+
+
+# ============================================================
+#  Schema 自省：动态构建 System Prompt
+# ============================================================
+
+def build_system_prompt(schema: dict) -> str:
+    """
+    构建包含 JSON Schema 的系统提示词
+
+    将 AnalysisResult.model_json_schema() 注入到 System Prompt 中，
+    让 LLM 明确知道输出结构的字段名、类型、约束和描述。
+
+    参数:
+        schema: Pydantic 模型的 JSON Schema 字典
+
+    返回:
+        完整的系统提示词字符串
+    """
+    schema_json = json.dumps(schema, indent=2, ensure_ascii=False)
+    return SYSTEM_PROMPT_TEMPLATE.replace("{schema}", schema_json)
+
+
+# ============================================================
+#  用户提示词构建函数
 # ============================================================
 
 def build_analysis_prompt(
     source: str,
-    error_lines: str,
+    error_lines: list[str],
     stats: dict,
-    full_log_preview: str = "",
+    full_log_preview: str,
 ) -> str:
     """
     构建发送给 AI 的用户提示词
 
     把日志预处理的结果（平台、错误行、统计信息、日志原文）
     按照模板拼接成完整的提示词。
-
-    参数:
-        source: 识别出的日志来源平台，如 "npm"、"GitHub Actions"
-        error_lines: 预提取的关键错误行（字符串）
-        stats: 日志统计信息，包含:
-            - error_count: 错误关键词出现次数
-            - warning_count: 警告关键词出现次数
-            - fatal_count: 致命错误次数
-            - total_lines: 日志总行数
-        full_log_preview: 截断后的日志原文（可选）
-
-    返回:
-        拼接好的用户提示词字符串
     """
     parts: list[str] = []
 
-    # ---- 1. 角色设定 ----
-    parts.append(
-        "你是一名拥有 10 年经验的资深 DevOps 工程师和 CI/CD 专家。\n"
-        "用户会给你一段构建失败的日志，你需要输出一份结构化的分析报告。"
-    )
+    # ---- 平台信息 ----
+    if source and source != "Unknown":
+        parts.append(f"【日志来源平台】{source}")
 
-    # ---- 2. 动态严重程度提示 ----
-    # 根据错误数量给 AI 一个初步判断，帮助它更准确地评估严重程度
+    # ---- 日志统计 ----
     fatal_count: int = stats.get("fatal_count", 0)
     error_count: int = stats.get("error_count", 0)
-
-    severity_hint: str = ""
-    if fatal_count > 0:
-        severity_hint = "⚠️ 本次日志包含致命错误（fatal），请重点分析致命错误的根因。"
-    elif error_count > 10:
-        severity_hint = "⚠️ 本次日志错误数量较多（超过10条），请聚焦根本原因，不要逐条罗列。"
-    # 否则 severity_hint 保持空字符串，不插入额外提示
-
-    if severity_hint:
-        parts.append(severity_hint)
-
-    # ---- 3. 日志信息区 ----
     warning_count: int = stats.get("warning_count", 0)
     total_lines: int = stats.get("total_lines", 0)
 
-    log_info: str = (
-        f"【日志来源】{source}\n"
-        f"【总行数】{total_lines}\n"
-        f"【错误数】{error_count}\n"
-        f"【警告数】{warning_count}\n"
-        f"【致命错误数】{fatal_count}"
+    stats_text: str = (
+        f"总行数: {total_lines} | "
+        f"致命错误: {fatal_count} | "
+        f"错误: {error_count} | "
+        f"警告: {warning_count}"
     )
-    parts.append(log_info)
+    parts.append(f"【日志统计】{stats_text}")
 
-    # ---- 4. 关键错误行（用代码块包裹） ----
-    if error_lines and error_lines.strip():
+    # ---- 动态严重程度提示 ----
+    if fatal_count > 0:
+        severity_hint = "critical（存在致命错误，构建完全阻断）"
+    elif error_count >= 5:
+        severity_hint = "high（错误数量较多，核心功能可能受影响）"
+    elif error_count >= 1:
+        severity_hint = "medium（存在错误，需要修复）"
+    else:
+        severity_hint = "low（仅警告，可能不影响构建）"
+    parts.append(f"【严重程度提示】{severity_hint}")
+
+    # ---- 预提取的错误行 ----
+    if error_lines:
+        error_text: str = "\n".join(error_lines[:10])
+        parts.append(f"【已识别的关键错误行】\n{error_text}")
+
+    # ---- 截断提示 ----
+    if len(full_log_preview) >= 6000:
         parts.append(
-            "【已识别的关键错误行】\n"
-            f"```\n{error_lines}\n```"
+            "【注意】原始日志较长，以下为截断后的版本（保留了头部和尾部的关键信息），"
+            "请基于可见内容进行分析。"
         )
 
-    # ---- 5. 输出格式要求 ----
-    format_requirement: str = (
-        "【输出格式要求】\n"
-        "请严格按照以下 6 个章节输出，章节标题不可修改：\n\n"
-        "### 🔴 错误摘要\n"
-        "一句话说清楚错误类型和直接原因。\n\n"
-        "### 🔍 根因分析\n"
-        "列出 2-3 个可能的原因，每个原因格式：\n"
-        "**原因描述（可能性 XX%）**：详细解释\n"
-        "⚠️ 所有可能性百分比之和必须等于 100%。\n\n"
-        "### 🛠️ 修复步骤\n"
-        "方案一（推荐）：最推荐的修复方式，附完整可执行命令\n"
-        "方案二（临时）：快速临时方案，附命令\n"
-        "每条命令必须放在 ```bash 代码块中。\n\n"
-        "### 📋 排查命令\n"
-        "列出 3 条排查命令，每条放代码块，后面加注释说明用途。\n\n"
-        "### ⚡ 严重程度\n"
-        "用 emoji 标记（🔴 高 / 🟡 中 / 🟢 低），并说明理由。\n\n"
-        "### 💡 预防建议\n"
-        "给出 2 条具体可执行的预防建议。"
+    # ---- 日志正文 ----
+    parts.append(f"【完整日志】\n{full_log_preview}")
+
+    # ---- 最终指令 ----
+    parts.append(
+        "请按照系统提示中的 JSON Schema 返回分析结果。\n"
+        "特别注意：root_causes 的 probability 之和必须等于 100。"
     )
-    parts.append(format_requirement)
-
-    # ---- 6. 参考示例 ----
-    parts.append(FEW_SHOT_EXAMPLE)
-
-    # ---- 7. 重要约束列表 ----
-    constraints: str = (
-        "【重要约束】\n"
-        "1. 只输出 Markdown 格式的分析报告，不要有任何额外的解释、开场白或结束语。\n"
-        "2. 如果日志信息不足，诚实说明「日志信息不足，无法确定根因」，不要编造原因。\n"
-        "3. 根因分析的百分比之和必须等于 100%，这是硬性要求。\n"
-        "4. 所有修复命令和排查命令必须放在 ```bash 代码块中，确保可以直接复制执行。\n"
-        "5. 错误摘要必须控制在 20 字以内，简洁明了。"
-    )
-    parts.append(constraints)
-
-    # ---- 8. 待分析的日志 ----
-    if full_log_preview and full_log_preview.strip():
-        parts.append(f"【待分析的日志】\n```\n{full_log_preview}\n```")
 
     return "\n\n".join(parts)
+
+
+# ============================================================
+#  RAG 增强提示词构建
+# ============================================================
+
+_RAG_SECTION_TEMPLATE = """
+
+【历史相似案例参考】
+⚠️ 以下案例为历史日志的修复记录，仅作参考，不要直接套用命令。
+请结合当前日志的具体情况独立分析，历史案例仅用于辅助判断。
+
+{rag_context}
+"""
+
+
+def build_rag_augmented_prompt(
+    rag_context: str, base_prompt: str
+) -> str:
+    """
+    在基础提示词末尾注入 RAG 历史案例上下文
+    """
+    if not rag_context or not rag_context.strip():
+        return base_prompt
+
+    rag_section = _RAG_SECTION_TEMPLATE.format(rag_context=rag_context)
+    return base_prompt + rag_section

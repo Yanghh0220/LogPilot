@@ -687,10 +687,25 @@ if analyze_clicked:
             </div>
             """, unsafe_allow_html=True)
 
-            # 修复命令
+            # 修复命令（根据 safety_level 分级展示）
             for i, s in enumerate(suggestions, 1):
                 cmd = s.get("command", "")
-                if cmd:
+                safety = s.get("safety_level", "safe")
+                if not cmd:
+                    continue
+
+                if safety == "dangerous":
+                    st.error(
+                        f"🚫 **方案 {i} 的命令已被安全系统拦截**\n\n"
+                        f"命令 `{cmd[:80]}...` 触发了危险模式匹配，"
+                        f"请人工审核后再决定是否执行。"
+                    )
+                elif safety == "review":
+                    st.warning(
+                        f"⚠️ **方案 {i} 的命令需要管理员权限 / 影响范围较大，请确认后再执行**"
+                    )
+                    st.code(cmd, language="bash")
+                else:  # safe
                     st.code(cmd, language="bash")
 
         # ---- 排查命令 ----

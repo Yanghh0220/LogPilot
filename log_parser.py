@@ -308,9 +308,9 @@ def parse_log(log_text: str) -> ParsedLog:
     truncated_log = truncate_log(log_text)
     is_truncated = len(truncated_log) < original_length
 
-    return {
-        "platform": platform,
-        "error_lines": error_lines,
-        "truncated_log": truncated_log,
-        "is_truncated": is_truncated,
-    }
+    return ParsedLog(
+        platform=platform,
+        error_lines=error_lines,
+        truncated_log=truncated_log,
+        is_truncated=is_truncated,
+    )

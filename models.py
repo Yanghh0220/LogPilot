@@ -35,10 +35,22 @@ _DANGEROUS_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"dd\s+if=/dev/(zero|urandom|random)\s+of=/dev/\w+", re.IGNORECASE),
     re.compile(r"curl\s+[^|]*\|\s*(ba)?sh", re.IGNORECASE),
     re.compile(r"wget\s+[^|]*\|\s*(ba)?sh", re.IGNORECASE),
+    re.compile(r"curl\s+[^|]*\|\s*python[23]?", re.IGNORECASE),   # curl | python
     re.compile(r":\(\)\{.*\}", re.IGNORECASE),  # Fork bomb
     re.compile(r"chmod\s+-R\s+777\s+/", re.IGNORECASE),
     re.compile(r">\s*/dev/sd[a-z]", re.IGNORECASE),  # 覆写磁盘设备
     re.compile(r"mv\s+/\s+", re.IGNORECASE),  # mv / ...
+    re.compile(r"sudo\s+rm\b", re.IGNORECASE),  # sudo rm（严格拦截）
+]
+
+# 需要审核（review）的命令模式 — 允许但需标记
+_REVIEW_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"\bsudo\b", re.IGNORECASE),            # 任何 sudo 命令
+    re.compile(r"docker\s+system\s+prune", re.IGNORECASE),  # docker system prune
+    re.compile(r"kill\s+-9\b", re.IGNORECASE),         # kill -9
+    re.compile(r"docker\s+rm\s+-f", re.IGNORECASE),    # docker rm -f
+    re.compile(r"kubectl\s+delete\b", re.IGNORECASE),  # kubectl delete
+    re.compile(r"git\s+push\s+--force", re.IGNORECASE),  # git push --force
 ]
 
 
@@ -128,6 +140,23 @@ class FixSuggestion(BaseModel):
     def validate_command(cls, v: str) -> str:
         """命令级安全校验：语法解析 + 黑名单"""
         return validate_command_safety(v)
+
+    @model_validator(mode="after")
+    def auto_mark_review_level(self) -> "FixSuggestion":
+        """
+        自动标记 review 级别的命令
+
+        如果命令匹配 _REVIEW_PATTERNS（sudo / docker system prune / kill -9 等），
+        但 safety_level 被标记为 safe，则自动升级为 review。
+        dangerous 级别由 validate_command_safety 的 ValueError 触发 instructor 重试。
+        """
+        for pattern in _REVIEW_PATTERNS:
+            if pattern.search(self.command):
+                if self.safety_level == "safe":
+                    # 使用 object.__setattr__ 绕过 frozen 限制
+                    object.__setattr__(self, "safety_level", "review")
+                break
+        return self
 
     # ---- 向后兼容：支持 dict-style 访问 ----
     # app.py 和 cache_engine.py 使用 result.get("key") 和 s.get("key")
@@ -238,21 +267,41 @@ class AnalysisResult(BaseModel):
 
 
 # ============================================================
-#  保留 ParsedLog 为 TypedDict
+#  ParsedLog — 日志预处理结果（BaseModel）
 # ============================================================
-# ParsedLog 仅用于 log_parser.py 的内部返回值
-# 不涉及 AI 交互，无需 Pydantic 校验
-
-from typing import TypedDict
+# 从 TypedDict 升级为 BaseModel，获得运行时校验和更好的 IDE 支持
 
 
-class ParsedLog(TypedDict):
+class ParsedLog(BaseModel):
     """
     日志预处理的结果
 
-    这就是 parse_log() 返回值的"形状"
+    这就是 parse_log() 返回值的类型。
     """
-    platform: str          # 识别出的平台，如 "npm"、"GitHub Actions"
-    error_lines: list[str] # 提取的关键错误行
-    truncated_log: str     # 截断后的日志文本
-    is_truncated: bool     # 是否进行了截断
+
+    platform: str = Field(
+        default="Unknown",
+        description="识别出的平台，如 npm、GitHub Actions",
+    )
+    error_lines: list[str] = Field(
+        default_factory=list,
+        description="提取的关键错误行",
+    )
+    truncated_log: str = Field(
+        default="",
+        description="截断后的日志文本",
+    )
+    is_truncated: bool = Field(
+        default=False,
+        description="是否进行了截断",
+    )
+
+    # ---- 向后兼容：支持 dict-style 访问 ----
+    # log_parser.py 历史上返回 dict，现改为 BaseModel
+    # 提供 __getitem__ / get 方法桥接 dict-style 访问
+
+    def __getitem__(self, key: str) -> Any:
+        return getattr(self, key)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return getattr(self, key, default)

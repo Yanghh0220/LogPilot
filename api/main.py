@@ -791,3 +791,13 @@ async def root():
     """Redirect to API documentation."""
     from fastapi.responses import RedirectResponse
     return RedirectResponse(url="/docs")
+
+
+# ============================================================
+#  Entrypoint: python -m api.main
+# ============================================================
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("api.main:app", host="127.0.0.1", port=8000, reload=True)
+

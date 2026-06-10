@@ -683,28 +683,44 @@ class TestModelSerialization:
 
 
 # ============================================================
-#  测试：ParsedLog 保持 TypedDict
+#  测试：ParsedLog 为 BaseModel
 # ============================================================
 
-class TestParsedLogTypedDict:
-    """测试 ParsedLog 仍然是 TypedDict"""
+class TestParsedLogModel:
+    """测试 ParsedLog BaseModel"""
 
-    def test_parsed_log_is_typed_dict(self):
-        """ParsedLog 是 TypedDict 类型"""
-        from typing import get_type_hints
-        hints = get_type_hints(ParsedLog)
-        assert "platform" in hints
-        assert "error_lines" in hints
-        assert "truncated_log" in hints
-        assert "is_truncated" in hints
+    def test_parsed_log_is_base_model(self):
+        """ParsedLog 是 BaseModel 类型"""
+        from pydantic import BaseModel
+        assert issubclass(ParsedLog, BaseModel)
+
+    def test_parsed_log_creation(self):
+        """ParsedLog 可以正常创建"""
+        log = ParsedLog(
+            platform="npm",
+            error_lines=["ERR: test"],
+            truncated_log="full log",
+            is_truncated=False,
+        )
+        assert log.platform == "npm"
+        assert log.error_lines == ["ERR: test"]
 
     def test_parsed_log_dict_access(self):
-        """ParsedLog 支持 dict 访问"""
-        log: ParsedLog = {
-            "platform": "npm",
-            "error_lines": ["ERR: test"],
-            "truncated_log": "full log",
-            "is_truncated": False,
-        }
+        """ParsedLog 支持 dict-style 访问（向后兼容）"""
+        log = ParsedLog(
+            platform="npm",
+            error_lines=["ERR: test"],
+            truncated_log="full log",
+            is_truncated=False,
+        )
         assert log["platform"] == "npm"
         assert log.get("error_lines") == ["ERR: test"]
+        assert log.get("nonexistent", "default") == "default"
+
+    def test_parsed_log_defaults(self):
+        """ParsedLog 字段有合理默认值"""
+        log = ParsedLog()
+        assert log.platform == "Unknown"
+        assert log.error_lines == []
+        assert log.truncated_log == ""
+        assert log.is_truncated is False

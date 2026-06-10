@@ -1,214 +1,351 @@
 """
-LogGazer 核心逻辑单元测试
+tests/test_analyzer.py — 分析器核心流程测试
 
-运行方式：
-    pytest tests/ -v
-    pytest tests/ -v --tb=short   # 失败时只显示简短信息
-    pytest tests/test_analyzer.py::TestDetectLogSource -v  # 只跑某个类
+测试 analyze_log() 端到端流程：
+1. 正常日志分析 → Mock AI 返回 AnalysisResult
+2. 结构化生成失败 → 验证降级路径触发
+3. 危险命令拦截 → 验证 Pydantic ValidationError
+4. 空输入 → ValueError
+
+所有 AI 调用均通过 Mock 实现，不依赖外部 API Key。
 """
 
-import os
 import sys
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
 import pytest
 
-# 把项目根目录加入 Python 路径
-# 这样无论从哪个目录运行 pytest 都能找到项目模块
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+# 确保项目根目录在 sys.path 中
+project_root = Path(__file__).parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
-# 从 log_parser 导入实际存在的函数
-# 注意：detect_log_source 实际叫 detect_platform，preprocess_log 实际叫 parse_log
-from log_parser import (
-    detect_platform,
-    extract_error_lines,
-    truncate_log,
-    get_error_stats,
-    parse_log,
+from models import (
+    AnalysisResult,
+    FixSuggestion,
+    RootCause,
 )
 
 
 # ============================================================
-#  平台识别测试
+#  测试数据工厂
 # ============================================================
 
-class TestDetectLogSource:
-    """测试日志来源平台的自动识别"""
+def _make_mock_result(**overrides) -> AnalysisResult:
+    """构造一个合法的 AnalysisResult 实例"""
+    data = {
+        "error_summary": "npm 依赖解析冲突",
+        "error_detail": "npm ERR! ERESOLVE could not resolve",
+        "root_causes": [
+            {"description": "react 版本不兼容", "probability": 90},
+            {"description": "package-lock.json 过期", "probability": 10},
+        ],
+        "fix_suggestions": [
+            {
+                "title": "使用 --legacy-peer-deps",
+                "description": "跳过 peer dependency 检查",
+                "command": "npm install --legacy-peer-deps",
+                "safety_level": "safe",
+            },
+        ],
+        "debug_commands": ["npm ls react", "npm why react"],
+        "severity": "medium",
+        "prevention": ["使用更宽松的版本范围"],
+        "security_warning": "",
+    }
+    data.update(overrides)
+    return AnalysisResult.model_validate(data)
 
-    def test_detect_npm(self):
-        """识别 npm 依赖冲突日志"""
-        log = "npm ERR! code ERESOLVE\nnpm ERR! unable to resolve"
-        result = detect_platform(log)
-        assert result == "npm"
 
-    def test_detect_docker(self):
-        """识别 Docker 构建失败日志"""
-        log = "Step 3/5 : RUN pip install\nDockerfile syntax error\ndocker build failed"
-        result = detect_platform(log)
-        assert result == "Docker"
+SAMPLE_NPM_LOG = """\
+npm ERR! code ERESOLVE
+npm ERR! ERESOLVE could not resolve
+npm ERR! While resolving: react-scripts@5.0.1
+npm ERR! Found: react@18.2.0
+npm ERR! Conflicting peer dependency: react@17.0.2
+npm ERR! Fix the upstream dependency conflict, or retry
+npm ERR! this command with --force or --legacy-peer-deps
+"""
 
-    def test_detect_github_actions(self):
-        """识别 GitHub Actions 工作流日志"""
-        log = "Run actions/checkout@v3\n::error::Process failed\nGITHUB_WORKSPACE=/home/runner"
-        result = detect_platform(log)
-        assert result == "GitHub Actions"
+# Auto-use fixture: disable cache + cluster engine to avoid heavy imports
+@pytest.fixture(autouse=True)
+def _disable_cache_and_cluster():
+    """Mock cache and cluster engine layers to avoid heavy dependency imports."""
+    with patch("analyzer._get_or_create_cache", return_value=None), \
+         patch("analyzer._store_to_cluster_engine", return_value=None):
+        yield
 
-    def test_detect_pytest(self):
-        """识别 Python/pytest 测试失败日志"""
-        log = (
-            "Traceback (most recent call last):\n"
-            "  File test_app.py\n"
-            "AssertionError: assert 1 == 2\n"
-            "pytest failed"
+
+# ============================================================
+#  测试：analyze_log() 正常流程
+# ============================================================
+
+class TestAnalyzeLogNormal:
+    """测试 analyze_log() 正常分析流程（Mock AI）"""
+
+    @patch("ai_engine.call_ai_structured")
+    def test_analyze_returns_analysis_result(self, mock_structured):
+        """正常 npm 日志分析返回 AnalysisResult 实例"""
+        mock_structured.return_value = _make_mock_result()
+
+        from analyzer import analyze_log
+
+        result = analyze_log(SAMPLE_NPM_LOG)
+
+        assert isinstance(result, AnalysisResult)
+        assert result.error_summary == "npm 依赖解析冲突"
+        assert result.severity == "medium"
+        assert len(result.root_causes) == 2
+        assert sum(c.probability for c in result.root_causes) == 100
+
+    @patch("ai_engine.call_ai_structured")
+    def test_analyze_calls_ai_with_correct_prompt(self, mock_structured):
+        """验证 analyze_log 向 AI 传递了正确的 system/user prompt"""
+        mock_structured.return_value = _make_mock_result()
+
+        from analyzer import analyze_log
+
+        analyze_log(SAMPLE_NPM_LOG)
+
+        # 验证 call_ai_structured 被调用
+        assert mock_structured.call_count == 1
+        call_kwargs = mock_structured.call_args[1]
+        assert "system_prompt" in call_kwargs
+        assert "user_prompt" in call_kwargs
+        assert "max_retries" in call_kwargs
+        # user_prompt 应包含日志内容
+        assert "ERESOLVE" in call_kwargs["user_prompt"]
+
+    def test_empty_log_raises_value_error(self):
+        """空日志输入抛出 ValueError"""
+        from analyzer import analyze_log
+
+        with pytest.raises(ValueError, match="不能为空"):
+            analyze_log("")
+
+    def test_whitespace_only_raises_value_error(self):
+        """纯空白日志抛出 ValueError"""
+        from analyzer import analyze_log
+
+        with pytest.raises(ValueError, match="不能为空"):
+            analyze_log("   \n  \t  ")
+
+    @patch("ai_engine.call_ai_structured")
+    def test_result_fields_accessible_by_dict_style(self, mock_structured):
+        """AnalysisResult 支持 dict-style 访问（向后兼容）"""
+        mock_structured.return_value = _make_mock_result()
+
+        from analyzer import analyze_log
+
+        result = analyze_log(SAMPLE_NPM_LOG)
+
+        # dict-style get
+        assert result.get("error_summary") == "npm 依赖解析冲突"
+        assert result.get("severity") == "medium"
+        assert result.get("nonexistent", "fallback") == "fallback"
+
+        # dict-style []
+        assert result["error_summary"] == "npm 依赖解析冲突"
+
+        # reason alias
+        reason = result.get("reason")
+        assert "react 版本不兼容" in reason
+
+    @patch("ai_engine.call_ai_structured")
+    def test_result_fields_accessible_by_attribute(self, mock_structured):
+        """AnalysisResult 支持属性访问"""
+        mock_structured.return_value = _make_mock_result()
+
+        from analyzer import analyze_log
+
+        result = analyze_log(SAMPLE_NPM_LOG)
+
+        assert result.error_summary == "npm 依赖解析冲突"
+        assert result.severity == "medium"
+        assert len(result.fix_suggestions) == 1
+        assert len(result.debug_commands) == 2
+
+
+# ============================================================
+#  测试：降级路径（直接测试 _legacy_analyze）
+# ============================================================
+
+class TestAnalyzeLogFallback:
+    """测试 _legacy_analyze() 降级路径"""
+
+    @patch("ai_engine.call_ai_legacy")
+    def test_legacy_analyze_with_valid_json(self, mock_legacy):
+        """降级路径：AI 返回合法 JSON 时正常解析"""
+        mock_legacy.return_value = (
+            '{"error_summary": "降级测试",'
+            '"error_detail": "test",'
+            '"root_causes": [{"description": "原因", "probability": 100}],'
+            '"fix_suggestions": [{"title": "修复", "description": "描述",'
+            '"command": "echo test", "safety_level": "safe"}],'
+            '"debug_commands": ["echo debug"],'
+            '"severity": "medium"}'
         )
-        result = detect_platform(log)
-        assert result == "pytest"
 
-    def test_detect_jenkins(self):
-        """识别 Jenkins 构建失败日志"""
-        log = "[Pipeline] stage\nBUILD FAILURE\nFinished: FAILURE"
-        result = detect_platform(log)
-        assert result == "Jenkins"
+        from analyzer import _legacy_analyze
+        from prompts import build_system_prompt
+        from models import AnalysisResult
 
-    def test_detect_unknown(self):
-        """无法识别的日志返回 Unknown"""
-        log = "hello world this is some random text"
-        result = detect_platform(log)
-        assert result == "Unknown"
+        system_prompt = build_system_prompt(AnalysisResult.model_json_schema())
+        result = _legacy_analyze("test user prompt")
 
+        assert isinstance(result, AnalysisResult)
+        assert result.error_summary == "降级测试"
+        assert mock_legacy.call_count == 1
 
-# ============================================================
-#  错误行提取测试
-# ============================================================
+    @patch("ai_engine.call_ai_legacy")
+    def test_legacy_analyze_with_api_error(self, mock_legacy):
+        """降级路径：AI 返回 API 错误提示时创建 fallback 模型"""
+        mock_legacy.return_value = "⚠️ API Key 未配置"
 
-class TestExtractErrorLines:
-    """测试从日志中提取关键错误行"""
+        from analyzer import _legacy_analyze
 
-    def test_extracts_line_with_error_keyword(self):
-        """能正确提取包含 ERROR 的行"""
-        log = "Starting build...\nERROR: build failed\nDone."
-        result = extract_error_lines(log)
-        assert any("ERROR" in line for line in result)
+        result = _legacy_analyze("test user prompt")
 
-    def test_returns_nonempty_when_no_error_keyword(self):
-        """没有错误关键词时，返回列表不为空（有 fallback 逻辑时）"""
-        log = "\n".join([f"line {i}: normal log output" for i in range(100)])
-        result = extract_error_lines(log)
-        # 即使没有错误关键词，提取结果也不应导致程序崩溃
-        assert isinstance(result, list)
+        assert isinstance(result, AnalysisResult)
+        # 降级为 fallback 模型
+        assert result.error_summary == "AI 分析结果解析失败"
+        assert result.security_warning != ""
 
-    def test_max_lines_limit(self):
-        """提取行数不超过 max_lines 参数"""
-        # 构造 20 行都含 ERROR 的日志
-        log = "\n".join([f"ERROR: failure {i}" for i in range(20)])
-        result = extract_error_lines(log, max_lines=5)
-        assert len(result) <= 5
+    @patch("ai_engine.call_ai_legacy")
+    def test_legacy_analyze_with_unparseable_text(self, mock_legacy):
+        """降级路径：AI 返回无法解析的文本时创建 fallback 模型"""
+        mock_legacy.return_value = "This is not JSON at all, just random text"
 
-    def test_multiple_errors_all_extracted(self):
-        """包含多行 ERROR 的日志应全部提取"""
-        log = "start\nERROR: first error\nmiddle\nERROR: second error\nERROR: third error\nend"
-        result = extract_error_lines(log)
-        error_lines = [line for line in result if "ERROR" in line]
-        assert len(error_lines) == 3
+        from analyzer import _legacy_analyze
 
+        result = _legacy_analyze("test user prompt")
 
-# ============================================================
-#  日志截断测试
-# ============================================================
+        assert isinstance(result, AnalysisResult)
+        assert result.security_warning != ""
+        # fallback 模型至少应有基本结构
+        assert len(result.root_causes) == 1
+        assert result.root_causes[0].probability == 100
 
-class TestTruncateLog:
-    """测试过长日志的智能截断"""
+    @patch("ai_engine.call_ai_legacy")
+    def test_legacy_analyze_with_markdown_fenced_json(self, mock_legacy):
+        """降级路径：AI 返回 Markdown 围栏包裹的 JSON 时正常解析"""
+        mock_legacy.return_value = (
+            '```json\n'
+            '{"error_summary": "围栏测试",'
+            '"error_detail": "test",'
+            '"root_causes": [{"description": "测试原因", "probability": 100}],'
+            '"fix_suggestions": [{"title": "修复", "description": "描述",'
+            '"command": "echo test", "safety_level": "safe"}],'
+            '"debug_commands": ["echo debug"],'
+            '"severity": "low"}\n'
+            '```'
+        )
 
-    def test_short_log_returned_unchanged(self):
-        """短日志不截断，原样返回"""
-        log = "\n".join([f"line {i}" for i in range(50)])
-        result = truncate_log(log)
-        assert result == log
+        from analyzer import _legacy_analyze
 
-    def test_long_log_line_count_reduced(self):
-        """长日志被截断，内容长度减少"""
-        # 每行约 40 字符 × 200 行 ≈ 8000 字符，超过 MAX_LOG_LENGTH=6000
-        log = "\n".join([f"line {i}: this is a normal log output line" for i in range(200)])
-        result = truncate_log(log)
-        # 截断后的内容应该比原始内容短
-        assert len(result) < len(log)
+        result = _legacy_analyze("test user prompt")
 
-    def test_long_log_contains_omission_hint(self):
-        """截断后的日志包含省略提示"""
-        log = "\n".join([f"line {i}: this is a normal log output line" for i in range(200)])
-        result = truncate_log(log)
-        assert "省略" in result
+        assert isinstance(result, AnalysisResult)
+        assert result.error_summary == "围栏测试"
+        assert result.severity == "low"
 
 
 # ============================================================
-#  错误统计测试
+#  测试：模型校验拦截
 # ============================================================
 
-class TestGetErrorStats:
-    """测试日志中的错误/警告/致命错误统计"""
+class TestModelValidationInAnalyze:
+    """测试通过 analyze_log 间接验证的危险命令拦截"""
 
-    def test_error_count_is_correct(self):
-        """正确统计 ERROR 关键词行数"""
-        log = "ERROR: something failed\nnormal line\nERROR: another failure"
-        stats = get_error_stats(log)
-        assert stats["error_count"] == 2
+    def test_dangerous_command_rejected_at_model_level(self):
+        """包含 rm -rf / 的 FixSuggestion 触发 ValidationError"""
+        with pytest.raises(Exception) as exc_info:
+            FixSuggestion(
+                title="危险操作",
+                description="删除根目录",
+                command="rm -rf /",
+                safety_level="dangerous",
+            )
+        error_msg = str(exc_info.value)
+        assert "危险" in error_msg
 
-    def test_warning_count_is_correct(self):
-        """正确统计 WARNING 关键词行数"""
-        log = "WARNING: deprecated function\nnormal line\nanother line"
-        stats = get_error_stats(log)
-        assert stats["warning_count"] == 1
+    def test_safe_command_accepted(self):
+        """安全命令通过校验"""
+        suggestion = FixSuggestion(
+            title="安全操作",
+            description="安装依赖",
+            command="npm install",
+            safety_level="safe",
+        )
+        assert suggestion.command == "npm install"
+        assert suggestion.safety_level == "safe"
 
-    def test_fatal_count_is_correct(self):
-        """正确统计 FATAL 关键词行数"""
-        log = "FATAL: system crash\nnormal line\nanother line"
-        stats = get_error_stats(log)
-        assert stats["fatal_count"] == 1
+    def test_review_command_auto_upgraded(self):
+        """包含 sudo 的命令自动标记为 review"""
+        suggestion = FixSuggestion(
+            title="系统操作",
+            description="需要管理员权限",
+            command="sudo systemctl restart nginx",
+            safety_level="safe",  # LLM 标记为 safe，但应被自动升级
+        )
+        # 命令通过（不抛异常），但安全等级被自动提升
+        assert suggestion.safety_level == "review"
 
-    def test_total_lines_is_correct(self):
-        """正确统计日志总行数"""
-        log = "line1\nline2\nline3"
-        stats = get_error_stats(log)
-        assert stats["total_lines"] == 3
+    def test_docker_system_prune_auto_upgraded(self):
+        """docker system prune 自动标记为 review"""
+        suggestion = FixSuggestion(
+            title="清理 Docker",
+            description="清理所有未使用的 Docker 资源",
+            command="docker system prune -f",
+            safety_level="safe",
+        )
+        assert suggestion.safety_level == "review"
 
-    def test_empty_log_returns_zeros(self):
-        """空日志返回全零统计"""
-        stats = get_error_stats("")
-        assert stats["error_count"] == 0
-        assert stats["warning_count"] == 0
+    def test_kill_minus_9_auto_upgraded(self):
+        """kill -9 自动标记为 review"""
+        suggestion = FixSuggestion(
+            title="强制终止",
+            description="强制终止进程",
+            command="kill -9 12345",
+            safety_level="safe",
+        )
+        assert suggestion.safety_level == "review"
+
+    def test_normal_command_stays_safe(self):
+        """普通命令保持不变"""
+        suggestion = FixSuggestion(
+            title="正常安装",
+            description="安装 npm 包",
+            command="npm install react",
+            safety_level="safe",
+        )
+        assert suggestion.safety_level == "safe"
 
 
 # ============================================================
-#  日志预处理集成测试
+#  测试：analyze_log_advanced()
 # ============================================================
 
-class TestPreprocessLog:
-    """测试日志预处理的完整流程（集成测试）"""
+class TestAnalyzeLogAdvanced:
+    """测试 analyze_log_advanced() 的降级行为"""
 
-    def test_returns_dict_with_all_required_keys(self):
-        """返回结果包含所有必要字段"""
-        log = "npm ERR! code ERESOLVE\nERROR: build failed\nline1\nline2\nline3"
-        result = parse_log(log)
-        assert "platform" in result
-        assert "error_lines" in result
-        assert "truncated_log" in result
-        assert "is_truncated" in result
+    def test_empty_log_raises_value_error(self):
+        """空日志抛出 ValueError"""
+        from analyzer import analyze_log_advanced
 
-    def test_npm_log_source_detected(self):
-        """npm 日志能被正确识别"""
-        log = "npm ERR! code ERESOLVE\nnpm ERR! unable to resolve"
-        result = parse_log(log)
-        assert result["platform"] == "npm"
+        with pytest.raises(ValueError, match="不能为空"):
+            analyze_log_advanced("")
 
-    def test_error_lines_is_list(self):
-        """error_lines 字段是列表类型"""
-        log = "ERROR: something failed\nnormal line\nanother line"
-        result = parse_log(log)
-        assert isinstance(result["error_lines"], list)
+    @patch("ai_engine.call_ai_structured")
+    def test_falls_back_when_langgraph_unavailable(self, mock_structured):
+        """LangGraph 不可用时降级到 analyze_log()"""
+        mock_structured.return_value = _make_mock_result()
 
-    def test_stats_contains_required_fields(self):
-        """get_error_stats 返回的字典包含所有必要字段"""
-        log = "ERROR: something failed\nWARNING: something else\nFATAL: crash"
-        stats = get_error_stats(log)
-        assert "total_lines" in stats
-        assert "error_count" in stats
-        assert "warning_count" in stats
-        assert "fatal_count" in stats
+        from analyzer import analyze_log_advanced
+
+        result = analyze_log_advanced(SAMPLE_NPM_LOG)
+
+        # 由于 agent_graph 可能不可用，应降级到 analyze_log
+        assert isinstance(result, AnalysisResult)
+        assert result.error_summary == "npm 依赖解析冲突"
