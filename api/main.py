@@ -168,6 +168,17 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 # ============================================================
 
 @app.get(
+    "/healthz",
+    tags=["Health"],
+    summary="Liveness probe",
+    description="Minimal liveness check. Returns 200 if the server is running.",
+)
+async def liveness_check():
+    """Fast liveness probe — used by BackendManager polling. No dependency checks."""
+    return {"status": "ok", "timestamp": time.time()}
+
+
+@app.get(
     "/v1/health",
     response_model=HealthResponse,
     tags=["Health"],
@@ -585,5 +596,19 @@ async def root():
 # ============================================================
 
 if __name__ == "__main__":
+    import os as _os
     import uvicorn
-    uvicorn.run("api.main:app", host="0.0.0.0", port=8000, reload=True)
+
+    # In auto-start mode (managed by BackendManager), disable reload for stability.
+    # reload=True spawns a watcher subprocess which complicates PID tracking and
+    # causes spurious restarts on file changes. In development, set
+    # LOGGAZER_BACKEND_RELOAD=1 to re-enable hot-reload.
+    _use_reload = _os.getenv("LOGGAZER_BACKEND_RELOAD", "0").lower() in ("1", "true", "yes")
+
+    uvicorn.run(
+        "api.main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=_use_reload,
+        log_level="info",
+    )

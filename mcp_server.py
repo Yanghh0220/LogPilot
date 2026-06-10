@@ -17,7 +17,7 @@
 #       "args": ["-m", "mcp_server", "--transport", "stdio"],
 #       "env": {
 #         "DEEPSEEK_API_KEY": "sk-...",
-#         "LOGGAZER_API_URL": "http://localhost:8000"
+#         "LOGGAZER_API_URL": "http://127.0.0.1:8000"
 #       }
 #     }
 #   }
@@ -257,7 +257,7 @@ async def analyze_log_tool(
         pass
 
     # Fallback: HTTP call to LogGazer API
-    api_url = os.getenv("LOGGAZER_API_URL", "http://localhost:8000")
+    api_url = os.getenv("LOGGAZER_API_URL", "http://127.0.0.1:8000")
 
     try:
         import httpx
@@ -384,7 +384,7 @@ Claude Desktop configuration (stdio mode):
         "args": ["-m", "mcp_server", "--transport", "stdio"],
         "env": {
           "DEEPSEEK_API_KEY": "sk-...",
-          "LOGGAZER_API_URL": "http://localhost:8000"
+          "LOGGAZER_API_URL": "http://127.0.0.1:8000"
         }
       }
     }

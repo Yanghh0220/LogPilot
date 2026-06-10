@@ -18,6 +18,10 @@ loggazer.db
 loggazer.db-wal
 loggazer.db-shm
 
+# Backend 进程管理（运行时生成）
+.backend.pid
+.backend_stderr.log
+
 # VS Code 扩展构建产物
 vscode-extension/node_modules/
 vscode-extension/out/

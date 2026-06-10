@@ -36,7 +36,7 @@ logger = logging.getLogger("github_app")
 GITHUB_APP_ID = os.getenv("GITHUB_APP_ID", "")
 GITHUB_APP_PRIVATE_KEY = os.getenv("GITHUB_APP_PRIVATE_KEY", "")  # PEM format
 GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET", "")
-LOGGAZER_API_URL = os.getenv("LOGGAZER_API_URL", "http://localhost:8000")
+LOGGAZER_API_URL = os.getenv("LOGGAZER_API_URL", "http://127.0.0.1:8000")
 
 # ============================================================
 #  FastAPI Sub-Application for GitHub Webhooks

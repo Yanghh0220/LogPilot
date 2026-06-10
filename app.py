@@ -9,23 +9,16 @@
 import os
 import sys
 import time
-import subprocess
 import streamlit as st
 import httpx
 
 # Backend API URL (configurable for local/cloud deployment)
-BACKEND_URL = os.getenv("LOGGAZER_API_URL", "http://localhost:8000").rstrip("/")
+BACKEND_URL = os.getenv(
+    "LOGGAZER_API_URL", "http://127.0.0.1:8000"
+).rstrip("/")
 
 # Project root (where api/main.py lives)
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
-
-# ---- Backend Health State ----
-if "backend_healthy" not in st.session_state:
-    st.session_state["backend_healthy"] = None  # None = not checked yet
-if "backend_starting" not in st.session_state:
-    st.session_state["backend_starting"] = False
-if "backend_pid" not in st.session_state:
-    st.session_state["backend_pid"] = None
 
 # ============================================
 # 可观测性初始化（全局单例）
@@ -88,120 +81,26 @@ def _get_observability():
     return _observability
 
 # ============================================
-#  BFF Helpers: Backend auto-start + health check + API call wrapper
+#  BFF Helpers: BackendManager singleton + API call wrapper
 # ============================================
 
-def _get_python_command() -> str:
-    """Detect the best available Python command."""
-    # Try the Python that's running this script first
-    return sys.executable
-
-
-def _is_pid_alive(pid: int) -> bool:
-    """Check if a process with the given PID is still running (cross-platform)."""
-    try:
-        if sys.platform == "win32":
-            # Windows: try to open process with SYNCHRONIZE access
-            import ctypes
-            kernel32 = ctypes.windll.kernel32
-            SYNCHRONIZE = 0x00100000
-            handle = kernel32.OpenProcess(SYNCHRONIZE, False, pid)
-            if handle:
-                kernel32.CloseHandle(handle)
-                return True
-            return False
-        else:
-            # Unix: signal 0 is a no-op that checks existence
-            os.kill(pid, 0)
-            return True
-    except (OSError, ProcessLookupError, Exception):
-        return False
-
-
-def start_backend_process() -> bool:
+@st.cache_resource
+def _get_backend_manager():
     """
-    Start the LogGazer FastAPI backend as a background subprocess.
+    Return a singleton BackendManager that persists across Streamlit reruns.
 
-    Returns True if the process was started successfully, False otherwise.
+    Using @st.cache_resource ensures the manager (and the underlying PID file
+    tracking) survives script re-execution, unlike session_state which is
+    per-user-session and may be lost or corrupted on page refresh.
     """
-    # If already starting, check if the previous process is still alive
-    if st.session_state.get("backend_starting"):
-        prev_pid = st.session_state.get("backend_pid")
-        if prev_pid and not _is_pid_alive(prev_pid):
-            # Previous process died — reset and allow restart
-            st.session_state["backend_starting"] = False
-            st.session_state["backend_pid"] = None
-        else:
-            return False  # Still starting or can't determine
+    from backend_manager import BackendManager
+    return BackendManager(backend_url=BACKEND_URL)
 
-    python_cmd = _get_python_command()
-    backend_script = os.path.join(PROJECT_DIR, "api", "main.py")
-
-    if not os.path.exists(backend_script):
-        st.error(f"未找到后端入口文件: {backend_script}")
-        return False
-
-    # Log file for backend stderr (debugging startup failures)
-    backend_log = os.path.join(PROJECT_DIR, ".backend_stderr.log")
-
-    st.session_state["backend_starting"] = True
-
-    log_fp = None
-    try:
-        # Launch backend as detached subprocess
-        # On Windows: CREATE_NEW_PROCESS_GROUP to avoid Ctrl+C propagation
-        # On Unix: start_new_session to detach from Streamlit's process group
-        creationflags = 0
-        if sys.platform == "win32":
-            creationflags = subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore
-
-        log_fp = open(backend_log, "w")
-        proc = subprocess.Popen(
-            [python_cmd, "-m", "api.main"],
-            cwd=PROJECT_DIR,
-            stdout=log_fp,
-            stderr=log_fp,
-            start_new_session=True if sys.platform != "win32" else False,
-            creationflags=creationflags if sys.platform == "win32" else 0,
-        )
-        st.session_state["backend_pid"] = proc.pid
-        return True
-    except Exception as e:
-        st.session_state["backend_starting"] = False
-        st.session_state["backend_pid"] = None
-        st.error(f"启动后端失败: {e}")
-        return False
-    finally:
-        if log_fp is not None:
-            log_fp.close()  # Child has its own copy; close parent's handle
-
-
-def wait_for_backend(timeout: float = 20.0, interval: float = 1.5) -> bool:
-    """
-    Wait for the backend to become healthy, up to `timeout` seconds.
-
-    Returns True if backend becomes healthy within the timeout.
-    """
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        health = check_backend_health()
-        if health and health.get("status") in ("healthy", "degraded"):
-            st.session_state["backend_healthy"] = True
-            st.session_state["backend_starting"] = False
-            return True
-        time.sleep(interval)
-    st.session_state["backend_starting"] = False
-    return False
 
 def check_backend_health() -> dict | None:
     """Check if the LogGazer Backend is reachable and healthy."""
-    try:
-        with httpx.Client(timeout=5.0) as client:
-            resp = client.get(f"{BACKEND_URL}/v1/health")
-            resp.raise_for_status()
-            return resp.json()
-    except Exception:
-        return None
+    from backend_manager import check_backend_health as _check
+    return _check(BACKEND_URL)
 
 
 def call_analyze_via_api(log_text: str) -> dict:
@@ -244,8 +143,7 @@ def call_analyze_via_api(log_text: str) -> dict:
     except httpx.ConnectError:
         raise ConnectionError(
             f"无法连接到 LogGazer Backend ({BACKEND_URL})。\n\n"
-            f"请点击下方的「启动 Backend」按钮，"
-            f"或手动运行: {_get_python_command()} -m api.main"
+            f"点击下方的「启动 Backend」按钮即可自动拉起后端。"
         )
     except httpx.TimeoutException:
         raise ConnectionError("分析请求超时，请检查网络或后端服务状态后重试。")
@@ -531,32 +429,20 @@ tests/test_auth.py:15: AssertionError
 }
 
 # ============================================
-# 主动后端健康检查 + 后台自动启动
+# 主动后端健康检查 + 自动启动（每次页面渲染）
 # ============================================
-# 每次页面渲染时都主动检查后端状态并自动启动，
-# 确保即使页面重新加载（F5），后端也能自动恢复。
-# 之前仅 backend_healthy is None 时检查（首次加载），
-# 重载后 session_state 被保留，backend_healthy != None，跳过检查导致报错。
+# BackendManager 使用 PID 文件 + 端口检测判断后端状态，
+# 不依赖 session_state，因此 F5 刷新 / Streamlit rerun 都不会
+# 导致状态丢失或错误。
+manager = _get_backend_manager()
 
-# 1. 清理过期的启动状态（防止残留状态阻止重新启动）
-if st.session_state.get("backend_starting"):
-    prev_pid = st.session_state.get("backend_pid")
-    if prev_pid and not _is_pid_alive(prev_pid):
-        # 之前启动的进程已死，重置状态以允许重新启动
-        st.session_state["backend_starting"] = False
-        st.session_state["backend_pid"] = None
-    elif not prev_pid:
-        # PID 未记录（异常状态），保守重置
-        st.session_state["backend_starting"] = False
+# 页面加载时同步确保后端就绪（带短暂等待，避免用户立刻点击时后端未就绪）
+# 使用较短的 timeout，避免页面加载过慢；若未就绪，用户点击分析时会再次等待。
+if not manager.is_backend_running():
+    # 后端未运行 → 启动并等待最多 8 秒（页面加载可接受的等待时间）
+    manager.ensure_backend(timeout=8.0)
 
-# 2. 每次加载时检查后端健康状态（不再仅依赖首次检查）
-health = check_backend_health()
-st.session_state["backend_healthy"] = health is not None and health.get("status") in ("healthy", "degraded")
-
-# 3. 后端不健康且未在启动中 → 后台自动启动
-if not st.session_state["backend_healthy"] and not st.session_state.get("backend_starting"):
-    # Fire-and-forget: 启动进程后不等待，让用户在后台启动期间继续操作
-    start_backend_process()
+backend_healthy = manager.is_backend_running()
 
 # ============================================
 # 标题
@@ -629,6 +515,51 @@ with col2:
     analyze_clicked = st.button("开始分析", type="primary", use_container_width=True)
 
 # ============================================
+#  Backend Recovery Panel (shared UI)
+# ============================================
+
+def _show_backend_recovery_panel(mgr):
+    """Show a compact recovery panel when the backend is unreachable."""
+    st.warning(
+        f"⚠️ **LogGazer Backend 未就绪**\n\n"
+        f"无法连接到 `{mgr.backend_url}`。"
+    )
+
+    col_a, col_b = st.columns([1, 1])
+    with col_a:
+        if st.button("🚀 启动 Backend", type="primary", use_container_width=True,
+                      key="recover_start"):
+            with st.spinner("正在启动 Backend..."):
+                ready = mgr.ensure_backend(timeout=25.0)
+            if ready:
+                st.toast("✅ Backend 已就绪", icon="✅")
+                st.rerun()
+            else:
+                st.error("启动失败，请检查 Python 环境。"
+                         f"手动运行: `{sys.executable} -m api.main`")
+    with col_b:
+        if st.button("🔄 重试连接", use_container_width=True,
+                      key="recover_retry"):
+            if mgr.is_backend_running():
+                st.toast("✅ Backend 已就绪", icon="✅")
+                st.rerun()
+            else:
+                st.toast("❌ 仍无法连接", icon="❌")
+
+    # Show backend stderr log if available
+    from backend_manager import BACKEND_LOG
+    if BACKEND_LOG.exists():
+        with st.expander("🔍 查看后端启动日志", expanded=False):
+            try:
+                log_content = BACKEND_LOG.read_text(encoding="utf-8", errors="replace")
+                st.code(log_content[-3000:], language="text")
+            except Exception:
+                st.caption("(无法读取日志文件)")
+
+    st.caption(f"或手动运行: `{sys.executable} -m api.main`")
+
+
+# ============================================
 # 分析 + 结果展示 (BFF Pattern)
 # ============================================
 if analyze_clicked:
@@ -636,96 +567,24 @@ if analyze_clicked:
         st.warning("请先粘贴日志内容")
     else:
         # ---- 后端健康检查 + 自动启动 ----
-        # 每次点击都重新检查健康状态，不使用缓存值（后端可能在页面加载后崩溃）
-        health = check_backend_health()
-        st.session_state["backend_healthy"] = health is not None and health.get("status") in ("healthy", "degraded")
-
-        if not st.session_state["backend_healthy"]:
-            backend_ready = False
-
-            if not st.session_state.get("backend_starting"):
-                # 尚未尝试启动 — 现在启动并等待
-                started = start_backend_process()
-                if started:
-                    st.toast("🚀 LogGazer Backend 正在启动...", icon="🚀")
-                    backend_ready = wait_for_backend(timeout=15.0)
-                    if backend_ready:
-                        st.toast("✅ Backend 已就绪", icon="✅")
-                        st.session_state["backend_healthy"] = True
-                        st.rerun()
-                    else:
-                        st.toast("⏳ Backend 启动较慢，请稍候点击「重试」", icon="⏳")
+        # BackendManager 确保后端就绪（已运行则立即返回，否则启动并等待）
+        if not manager.is_backend_running():
+            with st.spinner("🚀 正在启动 LogGazer Backend..."):
+                ready = manager.ensure_backend(timeout=25.0)
+            if ready:
+                st.toast("✅ Backend 已就绪", icon="✅")
+                st.rerun()
             else:
-                # 后台已在启动中（由页面加载时触发）
-                prev_pid = st.session_state.get("backend_pid")
-                if prev_pid and not _is_pid_alive(prev_pid):
-                    # 进程已死 — 读取日志并重试
-                    st.session_state["backend_starting"] = False
-                    st.session_state["backend_pid"] = None
-                    backend_log = os.path.join(PROJECT_DIR, ".backend_stderr.log")
-                    if os.path.exists(backend_log):
-                        log_content = open(backend_log, "r").read().strip()
-                        if log_content:
-                            with st.expander("🔍 查看后端启动日志", expanded=False):
-                                st.code(log_content[-2000:], language="text")
-                    # 重试启动
-                    started = start_backend_process()
-                    if started:
-                        st.toast("🔄 Backend 进程已退出，正在重新启动...", icon="🔄")
-                        backend_ready = wait_for_backend(timeout=15.0)
-                        if backend_ready:
-                            st.toast("✅ Backend 已就绪", icon="✅")
-                            st.session_state["backend_healthy"] = True
-                            st.rerun()
-                        else:
-                            st.toast("⏳ Backend 启动较慢，请稍候点击「重试」", icon="⏳")
-                else:
-                    # 进程仍在运行 — 等待它完成初始化
-                    st.toast("⏳ Backend 正在启动中，请稍候...", icon="⏳")
-                    backend_ready = wait_for_backend(timeout=10.0)
-                    if backend_ready:
-                        st.toast("✅ Backend 已就绪", icon="✅")
-                        st.session_state["backend_healthy"] = True
-                        st.rerun()
-                    else:
-                        st.toast("⏳ Backend 仍在启动中...", icon="⏳")
-
-            # 后端仍未就绪 — 显示交互式恢复面板
-            if not st.session_state["backend_healthy"]:
-                st.warning(
-                    f"⚠️ **LogGazer Backend 未就绪**\n\n"
-                    f"无法连接到 `{BACKEND_URL}`。"
-                )
-
-                col_a, col_b, col_c = st.columns([1, 1, 2])
-                with col_a:
-                    if st.button("🚀 启动 Backend", type="primary", use_container_width=True):
-                        started = start_backend_process()
-                        if started:
-                            st.toast("正在启动...", icon="🚀")
-                            backend_ready = wait_for_backend(timeout=20.0)
-                            if backend_ready:
-                                st.session_state["backend_healthy"] = True
-                                st.toast("✅ Backend 已就绪", icon="✅")
-                                st.rerun()
-                            else:
-                                st.warning("Backend 仍在启动中，请稍后点击「重试」")
-                        else:
-                            st.error("启动失败，请检查 Python 环境")
-                with col_b:
-                    if st.button("🔄 重试连接", use_container_width=True):
-                        health = check_backend_health()
-                        st.session_state["backend_healthy"] = health is not None and health.get("status") in ("healthy", "degraded")
-                        if st.session_state["backend_healthy"]:
-                            st.toast("✅ Backend 已就绪", icon="✅")
-                            st.rerun()
-                        else:
-                            st.toast("❌ 仍无法连接", icon="❌")
-                with col_c:
-                    st.caption(
-                        f"或手动运行: `{_get_python_command()} -m api.main`"
-                    )
+                # 启动失败 — 展示恢复面板
+                _show_backend_recovery_panel(manager)
                 st.stop()
+        else:
+            backend_healthy = True
+
+        # 后端就绪 → 执行分析
+        if not manager.is_backend_running():
+            _show_backend_recovery_panel(manager)
+            st.stop()
 
         # 初始化可观测性（首次调用时）
         obs = _get_observability()
@@ -794,42 +653,9 @@ if analyze_clicked:
             except ConnectionError as e:
                 if obs:
                     obs.record_error("network")
-                # 后端连接失败 — 重置状态并展示恢复面板
-                st.session_state["backend_healthy"] = False
+                # 后端连接失败 — 展示恢复面板
                 st.error(f"连接错误：{str(e)}")
-                # 展示与健康检查相同的交互式恢复面板
-                st.warning(
-                    f"⚠️ **LogGazer Backend 未就绪**\n\n"
-                    f"无法连接到 `{BACKEND_URL}`。"
-                )
-                col_a, col_b, col_c = st.columns([1, 1, 2])
-                with col_a:
-                    if st.button("🚀 启动 Backend", type="primary", use_container_width=True, key="retry_start"):
-                        started = start_backend_process()
-                        if started:
-                            st.toast("正在启动...", icon="🚀")
-                            backend_ready = wait_for_backend(timeout=20.0)
-                            if backend_ready:
-                                st.session_state["backend_healthy"] = True
-                                st.toast("✅ Backend 已就绪", icon="✅")
-                                st.rerun()
-                            else:
-                                st.warning("Backend 仍在启动中，请稍后点击「重试」")
-                        else:
-                            st.error("启动失败，请检查 Python 环境")
-                with col_b:
-                    if st.button("🔄 重试连接", use_container_width=True, key="retry_reconnect"):
-                        health = check_backend_health()
-                        st.session_state["backend_healthy"] = health is not None and health.get("status") in ("healthy", "degraded")
-                        if st.session_state["backend_healthy"]:
-                            st.toast("✅ Backend 已就绪", icon="✅")
-                            st.rerun()
-                        else:
-                            st.toast("❌ 仍无法连接", icon="❌")
-                with col_c:
-                    st.caption(
-                        f"或手动运行: `{_get_python_command()} -m api.main`"
-                    )
+                _show_backend_recovery_panel(manager)
                 st.stop()
             except Exception as e:
                 if obs:

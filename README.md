@@ -245,9 +245,10 @@ CACHE_EMBEDDING_MODEL=all-MiniLM-L6-v2  # Embedding 模型
 - **Python 3.11+**
 - **DeepSeek API Key**（[点此注册](https://platform.deepseek.com/)，新用户有免费额度）
 
-### 🆕 推荐启动方式：前后端分离（BFF Architecture）
+### 🆕 推荐启动方式：一键启动（自动管理后端）
 
-LogGazer v1.1 采用 Backend-for-Frontend 架构，FastAPI 后端提供 REST API，Streamlit 作为纯前端。
+LogGazer v1.1+ 内置 **BackendManager**，Streamlit 前端自动检测并拉起 FastAPI 后端。
+**无需手工启动两个进程**，只需一个命令：
 
 ```bash
 # 1. 克隆项目
@@ -270,17 +271,52 @@ pip install -r requirements.txt
 cp .env.example .env
 # 用编辑器打开 .env，填入你的 DeepSeek API Key
 
-# 6. 启动 FastAPI 后端（终端 1）
-python -m api.main
-# 或者: bash scripts/start_backend.sh
-# API 文档: http://localhost:8000/docs
+# 6. 运行系统自检（推荐）
+python check_system.py --start-backend
 
-# 7. 启动 Streamlit 前端（终端 2）
+# 7. 一键启动（只需一个命令！）
 streamlit run app.py
-# 前端会自动连接到 http://localhost:8000
+# 浏览器打开 http://localhost:8501
+# BackendManager 自动在后台启动 FastAPI 后端，无需手工操作
 ```
 
-浏览器自动打开 `http://localhost:8501`。如果后端未启动，Streamlit 会显示友好提示。
+**常见场景**：
+
+| 场景 | 操作 | 预期 |
+|------|------|------|
+| 全新环境 | `streamlit run app.py` → 贴日志 → 点"开始分析" | Backend 自动启动，分析正常完成 |
+| 刷新页面 (F5) | 按 F5 → 点"开始分析" | 自动检测后端，已在运行则复用 |
+| 后端崩溃 | BackendManager 自动检测并重启 | 点"重试连接"一键恢复 |
+| 后端已启动 | 直接分析 | 复用已有实例，不重复启动 |
+
+### 🛠️ 手动控制后端（可选）
+
+```bash
+# 手动启动/停止/查看后端状态
+python backend_manager.py start     # 启动
+python backend_manager.py stop      # 停止
+python backend_manager.py status    # 查看状态
+python backend_manager.py restart   # 重启
+
+# 传统方式：手动启动两个终端（仍支持）
+# 终端 1: python -m api.main
+# 终端 2: streamlit run app.py
+```
+
+### 配置
+
+所有配置通过环境变量统一管理（`.env` 文件）：
+
+```bash
+# 后端地址（前端自动连接）
+LOGGAZER_API_URL=http://127.0.0.1:8000
+
+# 开发模式：启用后端热重载
+LOGGAZER_BACKEND_RELOAD=1
+
+# API Key 认证（Cloud 模式）
+LOGGAZER_API_KEY=your-secret-key
+```
 
 ### 🏚️ Legacy 单进程模式（即将废弃）
 
@@ -301,8 +337,14 @@ pytest tests/ -v
 # 运行 API 层测试
 pytest api/tests/ -v
 
+# 运行 BackendManager 测试
+pytest tests/test_backend_manager.py -v
+
 # 运行全部测试
 pytest tests/ api/tests/ -v
+
+# 系统自检
+python check_system.py --verbose --start-backend
 ```
 
 ---
@@ -325,14 +367,16 @@ pytest tests/ api/tests/ -v
 ```
 LogGazer/
 ├── app.py                  # 🎨 Streamlit 前端主入口
+├── backend_manager.py      # 🔧 后端进程生命周期管理器（PID 文件 + 端口检测）
 ├── ai_engine.py            # 🤖 AI 调用引擎（重试机制 + 异常分类 + API 调用）
 ├── analyzer.py             # 🧠 日志分析（缓存集成 + AI 调用 + JSON 解析）
-├── cache_engine.py         # ⚡ 语义缓存引擎（指纹生成 + 向量检索 + RAG 上下文）
+├── cache_engine.py         # ⚡ 语义缓存引擎（指纹生成 + 矢量检索 + RAG 上下文）
 ├── prompt.py               # 📝 Prompt 工程（系统提示词 + Few-shot + RAG 增强）
 ├── prompts.py              # 📝 Prompt 工程（Markdown 格式，备用）
 ├── log_parser.py           # 🔍 日志预处理（平台识别 / 错误提取 / 智能截断）
-├── models.py               # 📐 类型定义（TypedDict）
+├── models.py               # 📐 类型定义（Pydantic 模型）
 ├── config.py               # ⚙️ 配置管理（环境变量 + 缓存配置）
+├── check_system.py         # ✅ 系统自检（Python 版本 / 依赖 / API Key / 后端状态）
 ├── style.css               # 🎨 全局 CSS 样式
 ├── .env.example            # 🔑 环境变量模板
 ├── requirements.txt        # 📦 Python 依赖清单
@@ -341,13 +385,23 @@ LogGazer/
 │       └── ci.yml          # 🔄 GitHub Actions CI 配置
 ├── .streamlit/
 │   └── config.toml         # Streamlit UI 配置
+├── api/                    # 🚀 FastAPI 后端
+│   ├── main.py             #    后端入口（/v1/analyze, /v1/health, /healthz）
+│   ├── schemas.py          #    Pydantic 请求/响应模型
+│   └── dependencies.py     #    依赖注入（Auth / RateLimit / Observability）
+├── scripts/                # 📜 启动脚本
+│   ├── start_all.bat       #    Windows 一键启动
+│   ├── start_all.sh        #    Linux/macOS 一键启动
+│   ├── start_backend.bat   #    Windows 后端专用启动
+│   └── start_backend.sh    #    Linux/macOS 后端专用启动
 ├── tests/                  # 🧪 单元测试
-│   ├── conftest.py         #    Pytest 配置（sys.path + OpenAI mock）
+│   ├── conftest.py         #    Pytest 配置
+│   ├── test_backend_manager.py  # BackendManager 测试 (38 tests)
 │   ├── test_analyzer.py    #    日志分析模块测试
 │   ├── test_analyzer_integration.py  # 缓存集成测试
 │   ├── test_cache_engine.py          # 语义缓存引擎测试
 │   ├── test_log_parser.py  #    日志解析模块测试
-│   └── test_prompt.py      #    Prompt 模块测试（含 RAG 增强测试）
+│   └── test_prompt.py      #    Prompt 模块测试
 ├── CLAUDE.md               # 🤖 AI 结对编程指南
 ├── LICENSE                 # 📄 MIT 开源许可证
 └── README.md               # 📖 项目说明（你正在看的这个）
